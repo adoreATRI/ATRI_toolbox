@@ -1,0 +1,40 @@
+# Local agent/tooling metadata
+.agents/
+.codex/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ROS/colcon and build output
+build/
+install/
+log/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+
+# Logs and temporary files
+*.log
+tmp/
+temp/
+
