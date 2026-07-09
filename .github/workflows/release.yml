@@ -108,6 +108,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           mapfile -t assets < <(find dist -type f | sort)
@@ -132,8 +133,8 @@ jobs:
           NOTES
           )
 
-          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release upload "$TAG_NAME" "${assets[@]}" --clobber
+          if gh release view "$TAG_NAME" --repo "$REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" "${assets[@]}" --clobber --repo "$REPOSITORY"
           else
-            gh release create "$TAG_NAME" "${assets[@]}" --title "ATRI Toolbox $TAG_NAME" --notes "$notes"
+            gh release create "$TAG_NAME" "${assets[@]}" --title "ATRI Toolbox $TAG_NAME" --notes "$notes" --repo "$REPOSITORY"
           fi
