@@ -13,9 +13,9 @@ permissions:
   contents: write
 
 jobs:
-  windows:
-    name: Build Windows release
-    runs-on: windows-latest
+  release:
+    name: Build and publish desktop release
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
@@ -32,68 +32,27 @@ jobs:
 
       - name: Check sources
         run: npm run check
+
+      - name: Install Windows packaging runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends wine64
+          wine --version
 
       - name: Build Windows packages
         run: npm run package:win -- --publish never
 
-      - name: Collect Windows assets
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
-          Get-ChildItem -Path release -File |
-            Where-Object { $_.Name -match "\.(exe|blockmap)$" -or $_.Name -eq "latest.yml" } |
-            Copy-Item -Destination artifacts
-
-          if (-not (Get-ChildItem -Path artifacts -File)) {
-            throw "No Windows release assets were generated."
-          }
-
-      - name: Upload Windows assets
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-release
-          path: artifacts/*
-          if-no-files-found: error
-
-  linux:
-    name: Build Linux release and publish
-    runs-on: ubuntu-latest
-    needs:
-      - windows
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Check sources
-        run: npm run check
-
       - name: Build Linux packages
         run: npm run package:linux -- --publish never
 
-      - name: Collect Linux assets
+      - name: Collect release assets
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p artifacts
-          find release -maxdepth 1 -type f \( -name "*.AppImage" -o -name "*.deb" -o -name "*.blockmap" -o -name "latest-linux.yml" \) -exec cp {} artifacts/ \;
+          find release -maxdepth 1 -type f \( -name "*.exe" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.blockmap" -o -name "latest.yml" -o -name "latest-linux.yml" \) -exec cp {} artifacts/ \;
           test "$(find artifacts -type f | wc -l)" -gt 0
-
-      - name: Download Windows assets
-        uses: actions/download-artifact@v4
-        with:
-          name: windows-release
-          path: artifacts
+          ls -lh artifacts
 
       - name: Publish GitHub Release
         shell: bash
