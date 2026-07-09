@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "description": "Cross-platform local toolbox for ATRI utilities.",
+  "author": {
+    "name": "ATRI",
+    "email": "makochishima043@gmail.com"
+  },
   "type": "module",
   "main": "desktop/main.cjs",
   "scripts": {

@@ -32,41 +32,108 @@ jobs:
       - name: Build Windows packages
         run: npm run package:win -- --publish never
 
-      - name: Publish GitHub Release
+      - name: Collect Windows assets
         shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          Get-ChildItem -Path release -File |
+            Where-Object { $_.Name -match "\.(exe|blockmap)$" -or $_.Name -eq "latest.yml" } |
+            Copy-Item -Destination artifacts
+
+          if (-not (Get-ChildItem -Path artifacts -File)) {
+            throw "No Windows release assets were generated."
+          }
+
+      - name: Upload Windows assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: artifacts/*
+          if-no-files-found: error
+
+  linux:
+    name: Build Linux release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check sources
+        run: npm run check
+
+      - name: Build Linux packages
+        run: npm run package:linux -- --publish never
+
+      - name: Collect Linux assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          find release -maxdepth 1 -type f \( -name "*.AppImage" -o -name "*.deb" -o -name "*.blockmap" -o -name "latest-linux.yml" \) -exec cp {} artifacts/ \;
+          test "$(find artifacts -type f | wc -l)" -gt 0
+
+      - name: Upload Linux assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: artifacts/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - windows
+      - linux
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Publish GitHub Release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
         run: |
-          $ErrorActionPreference = "Stop"
-          $PSNativeCommandUseErrorActionPreference = $false
-          $tag = $env:TAG_NAME
-          $assets = Get-ChildItem -Path release -File |
-            Where-Object { $_.Name -match "\.(exe|blockmap)$" -or $_.Name -eq "latest.yml" } |
-            Select-Object -ExpandProperty FullName
+          set -euo pipefail
+          mapfile -t assets < <(find dist -type f | sort)
 
-          if (-not $assets) {
-            throw "No Windows release assets were generated."
-          }
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "No release assets were generated." >&2
+            exit 1
+          fi
 
-          $notes = @"
+          notes=$(cat <<'NOTES'
           Windows 用户可直接下载：
 
           - `ATRI Toolbox Setup *.exe`：安装版
           - `ATRI Toolbox *.exe`：便携版，下载后直接运行
 
-          该版本未配置商业代码签名证书，首次运行时 Windows 可能显示安全提醒。
-          "@
+          Linux 用户可直接下载：
 
-          gh release view $tag *> $null
-          $releaseExists = $LASTEXITCODE -eq 0
+          - `*.AppImage`：通用便携版
+          - `*.deb`：Debian / Ubuntu 安装包
 
-          if ($releaseExists) {
-            gh release upload $tag $assets --clobber
-          } else {
-            gh release create $tag $assets --title "ATRI Toolbox $tag" --notes $notes
-          }
+          当前版本未配置商业代码签名证书，Windows 首次运行时可能显示安全提醒。
+          NOTES
+          )
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to publish GitHub Release $tag."
-          }
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$TAG_NAME" "${assets[@]}" --title "ATRI Toolbox $TAG_NAME" --notes "$notes"
+          fi
