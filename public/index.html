@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ATRI Toolbox</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="工具箱导航">
+        <div class="brand">
+          <div class="brand-mark">
+            <img src="./assets/atri-logo.png" alt="ATRI Toolbox" />
+          </div>
+          <div>
+            <h1>ATRI Toolbox</h1>
+            <span>Local tools</span>
+          </div>
+        </div>
+
+        <nav class="tool-nav">
+          <button class="tool-link active" type="button">
+            <span class="tool-link-icon">◎</span>
+            <span>ATRI思维导图</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <button id="settingsButton" class="ghost-button full-button" type="button">设置</button>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">当前工具</p>
+            <h2>ATRI思维导图</h2>
+          </div>
+          <div class="topbar-actions">
+            <button id="newMapButton" class="ghost-button" type="button">新建</button>
+            <button id="importButton" class="ghost-button" type="button">导入</button>
+            <button id="exportButton" class="primary-button" type="button">导出 DRAWIO</button>
+          </div>
+        </header>
+
+        <div class="workspace">
+          <section class="prompt-panel" aria-label="描述输入">
+            <div class="panel-heading">
+              <label for="descriptionInput">修改描述</label>
+              <span id="generationBadge" class="status-badge">当前导图</span>
+            </div>
+            <div class="prompt-composer">
+              <textarea
+                id="descriptionInput"
+                spellcheck="false"
+                rows="3"
+                placeholder="例如：在“模型生成”节点下添加一个“连接测试”子节点，备注写明需要检查接口地址、模型名和 API Key。"
+              ></textarea>
+            </div>
+            <p id="statusText" class="status-text" role="status">已载入默认导图。</p>
+          </section>
+
+          <section class="map-panel" aria-label="思维导图画布">
+            <div class="map-toolbar">
+              <div class="map-title">
+                <span class="map-dot"></span>
+                <input id="mapTitleInput" class="map-title-input" type="text" maxlength="80" value="ATRI思维导图" aria-label="画布标题" />
+              </div>
+              <div class="map-controls">
+                <button id="zoomOutButton" class="icon-button" type="button" aria-label="缩小">−</button>
+                <button id="fitButton" class="ghost-button small-button" type="button">适配</button>
+                <button id="zoomInButton" class="icon-button" type="button" aria-label="放大">+</button>
+              </div>
+            </div>
+            <div id="mapViewport" class="map-viewport">
+              <iframe
+                id="drawioFrame"
+                class="drawio-frame"
+                title="ATRI draw.io 思维导图编辑器"
+                allow="clipboard-read; clipboard-write"
+              ></iframe>
+            </div>
+
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <dialog id="settingsDialog" class="settings-dialog">
+      <form id="settingsForm" method="dialog">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">大模型 API</p>
+            <h2>设置</h2>
+          </div>
+          <button id="closeSettingsButton" class="icon-button" type="button" aria-label="关闭">×</button>
+        </div>
+
+        <div class="settings-grid">
+          <label for="endpointInput">Chat Completions Endpoint</label>
+          <input id="endpointInput" type="url" placeholder="https://api.example.com/v1/chat/completions" />
+
+          <label for="modelInput">模型</label>
+          <input id="modelInput" type="text" placeholder="填写模型名称" />
+
+          <label for="apiKeyInput">API Key</label>
+          <input id="apiKeyInput" type="password" autocomplete="off" placeholder="sk-..." />
+
+          <label for="temperatureInput">Temperature</label>
+          <input id="temperatureInput" type="number" min="0" max="2" step="0.1" value="0.3" />
+        </div>
+
+        <div class="settings-feedback">
+          <p class="settings-note">密钥仅保存在本机应用存储中，请勿在公共设备上保存。</p>
+          <p id="settingsStatusText" class="settings-status" role="status" aria-live="polite"></p>
+        </div>
+
+        <div class="dialog-actions">
+          <button id="testConnectionButton" class="ghost-button" type="button">测试连接</button>
+          <button class="primary-button" type="submit">保存设置</button>
+        </div>
+      </form>
+    </dialog>
+
+    <input id="importFileInput" type="file" accept="application/json,.json,.drawio,.xml,text/xml,application/xml" hidden />
+
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

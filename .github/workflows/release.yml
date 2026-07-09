@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Build Windows release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check sources
+        run: npm run check
+
+      - name: Build Windows packages
+        run: npm run package:win
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $false
+          $tag = $env:TAG_NAME
+          $assets = Get-ChildItem -Path release -File |
+            Where-Object { $_.Name -match "\.(exe|blockmap)$" -or $_.Name -eq "latest.yml" } |
+            Select-Object -ExpandProperty FullName
+
+          if (-not $assets) {
+            throw "No Windows release assets were generated."
+          }
+
+          $notes = @"
+          Windows 用户可直接下载：
+
+          - `ATRI Toolbox Setup *.exe`：安装版
+          - `ATRI Toolbox *.exe`：便携版，下载后直接运行
+
+          该版本未配置商业代码签名证书，首次运行时 Windows 可能显示安全提醒。
+          "@
+
+          gh release view $tag *> $null
+          $releaseExists = $LASTEXITCODE -eq 0
+
+          if ($releaseExists) {
+            gh release upload $tag $assets --clobber
+          } else {
+            gh release create $tag $assets --title "ATRI Toolbox $tag" --notes $notes
+          }
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to publish GitHub Release $tag."
+          }

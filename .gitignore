@@ -1,6 +1,7 @@
 # Local agent/tooling metadata
 .agents/
 .codex/
+TODO.md
 
 # OS and editor files
 .DS_Store
@@ -14,27 +15,19 @@ Thumbs.db
 .env
 .env.*
 !.env.example
-.venv/
-venv/
 
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+# Dependencies and caches
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# ROS/colcon and build output
+# Build output
+dist/
 build/
-install/
-log/
-cmake-build-*/
-CMakeFiles/
-CMakeCache.txt
+release/
 
-# Logs and temporary files
+# Temporary files
 *.log
 tmp/
 temp/
-
