@@ -36,7 +36,7 @@ jobs:
       - name: Install Windows packaging runtime
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends wine64
+          sudo apt-get install -y --no-install-recommends wine wine64
           wine --version
 
       - name: Build Windows packages
