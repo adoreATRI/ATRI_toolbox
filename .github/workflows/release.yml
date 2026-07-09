@@ -30,7 +30,7 @@ jobs:
         run: npm run check
 
       - name: Build Windows packages
-        run: npm run package:win
+        run: npm run package:win -- --publish never
 
       - name: Publish GitHub Release
         shell: pwsh
