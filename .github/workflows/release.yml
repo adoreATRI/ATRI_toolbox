@@ -53,8 +53,10 @@ jobs:
           if-no-files-found: error
 
   linux:
-    name: Build Linux release
+    name: Build Linux release and publish
     runs-on: ubuntu-latest
+    needs:
+      - windows
 
     steps:
       - name: Checkout
@@ -83,25 +85,11 @@ jobs:
           find release -maxdepth 1 -type f \( -name "*.AppImage" -o -name "*.deb" -o -name "*.blockmap" -o -name "latest-linux.yml" \) -exec cp {} artifacts/ \;
           test "$(find artifacts -type f | wc -l)" -gt 0
 
-      - name: Upload Linux assets
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-release
-          path: artifacts/*
-          if-no-files-found: error
-
-  publish:
-    name: Publish GitHub Release
-    runs-on: ubuntu-latest
-    needs:
-      - windows
-      - linux
-
-    steps:
-      - name: Download release assets
+      - name: Download Windows assets
         uses: actions/download-artifact@v4
         with:
-          path: dist
+          name: windows-release
+          path: artifacts
 
       - name: Publish GitHub Release
         shell: bash
@@ -111,7 +99,7 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          mapfile -t assets < <(find dist -type f | sort)
+          mapfile -t assets < <(find artifacts -type f | sort)
 
           if [ "${#assets[@]}" -eq 0 ]; then
             echo "No release assets were generated." >&2
