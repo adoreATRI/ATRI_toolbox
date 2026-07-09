@@ -110,6 +110,9 @@ jobs:
             exit 1
           fi
 
+          printf "Publishing release assets:\n"
+          printf " - %s\n" "${assets[@]}"
+
           notes=$(cat <<'NOTES'
           Windows 用户可直接下载：
 
@@ -126,7 +129,13 @@ jobs:
           )
 
           if gh release view "$TAG_NAME" --repo "$REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG_NAME" "${assets[@]}" --clobber --repo "$REPOSITORY"
-          else
-            gh release create "$TAG_NAME" "${assets[@]}" --title "ATRI Toolbox $TAG_NAME" --notes "$notes" --repo "$REPOSITORY"
+            gh release delete "$TAG_NAME" --yes --repo "$REPOSITORY"
+          fi
+
+          gh release create "$TAG_NAME" "${assets[@]}" --title "ATRI Toolbox $TAG_NAME" --notes "$notes" --repo "$REPOSITORY" --verify-tag
+
+          published_count=$(gh release view "$TAG_NAME" --repo "$REPOSITORY" --json assets --jq ".assets | length")
+          if [ "$published_count" -ne "${#assets[@]}" ]; then
+            echo "Expected ${#assets[@]} release assets, but GitHub reports $published_count." >&2
+            exit 1
           fi
