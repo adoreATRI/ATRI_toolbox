@@ -1,12 +1,21 @@
-const { app, BrowserWindow, Menu, shell } = require("electron");
+const { app, BrowserWindow, dialog, Menu, shell } = require("electron");
+const { autoUpdater } = require("electron-updater");
 const fs = require("node:fs");
 const path = require("node:path");
+
+const { createShutdownCoordinator } = require("./shutdown.cjs");
+const { createUpdateController } = require("./updater.cjs");
 
 let mainWindow = null;
 let serverRuntime = null;
 let startServer = null;
-let quitAfterCleanup = false;
 let cleanupPromise = null;
+const updateController = createUpdateController({
+  app,
+  updater: autoUpdater,
+  showDialog: showAppDialog,
+  getWindow: () => mainWindow,
+});
 
 const defaultWindowState = {
   width: 1320,
@@ -191,14 +200,41 @@ function createApplicationMenu() {
         { role: "togglefullscreen", label: "全屏" },
       ],
     },
+    {
+      label: "帮助",
+      submenu: [
+        {
+          label: "检查更新",
+          click: () => updateController.check(true),
+        },
+        {
+          label: `当前版本 ${app.getVersion()}`,
+          enabled: false,
+        },
+        { type: "separator" },
+        {
+          label: "项目主页",
+          click: () => openExternalUrl("https://github.com/adoreATRI/ATRI_toolbox"),
+        },
+      ],
+    },
   ];
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+function showAppDialog(options) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    return dialog.showMessageBox(mainWindow, options);
+  }
+
+  return dialog.showMessageBox(options);
+}
+
 app.whenReady().then(async () => {
   createApplicationMenu();
   await createMainWindow();
+  updateController.setup();
 
   app.on("activate", async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -213,17 +249,22 @@ app.on("window-all-closed", () => {
   }
 });
 
-app.on("before-quit", (event) => {
-  if (quitAfterCleanup) {
-    return;
-  }
+const shutdownCoordinator = createShutdownCoordinator({
+  beforeClose: () => {
+    saveWindowState(mainWindow);
 
-  event.preventDefault();
-  closeLocalService().finally(() => {
-    quitAfterCleanup = true;
-    app.quit();
-  });
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.hide();
+    }
+  },
+  close: closeLocalService,
+  quit: () => app.quit(),
+  forceExit: () => app.exit(0),
+  onError: (error) => console.warn("Application shutdown cleanup failed:", error),
 });
+
+app.on("before-quit", (event) => shutdownCoordinator.handleBeforeQuit(event));
+app.on("quit", () => shutdownCoordinator.handleQuit());
 
 function closeLocalService() {
   if (cleanupPromise) {

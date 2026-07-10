@@ -7,7 +7,7 @@ const env = { ...process.env };
 
 delete env.ELECTRON_RUN_AS_NODE;
 
-const child = spawn(electronPath, [projectRoot], {
+const child = spawn(electronPath, [projectRoot, ...process.argv.slice(2)], {
   env,
   stdio: "inherit",
 });

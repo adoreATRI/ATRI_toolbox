@@ -1,8 +1,17 @@
 {
   "name": "atri-toolbox",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "private": true,
   "description": "Cross-platform local toolbox for ATRI utilities.",
+  "license": "MIT",
+  "homepage": "https://github.com/adoreATRI/ATRI_toolbox#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adoreATRI/ATRI_toolbox.git"
+  },
+  "bugs": {
+    "url": "https://github.com/adoreATRI/ATRI_toolbox/issues"
+  },
   "desktopName": "atri-toolbox.desktop",
   "author": {
     "name": "ATRI",
@@ -14,7 +23,7 @@
     "start": "node desktop/launch.cjs",
     "dev": "node desktop/launch.cjs",
     "serve": "node server.js",
-    "check:syntax": "node --check server.js && node --check desktop/main.cjs && node --check desktop/launch.cjs && node --check public/app.js",
+    "check:syntax": "node --check mindmap-ai.js && node --check server.js && node --check desktop/main.cjs && node --check desktop/launch.cjs && node --check desktop/shutdown.cjs && node --check desktop/updater.cjs && node --check public/app.js",
     "test": "node --test",
     "check": "npm run check:syntax && npm test",
     "package:linux": "electron-builder --linux",
@@ -22,6 +31,9 @@
   },
   "engines": {
     "node": ">=22.12"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   },
   "devDependencies": {
     "electron": "^43.1.0",
@@ -37,8 +49,17 @@
     "files": [
       "desktop/**/*",
       "public/**/*",
+      "mindmap-ai.js",
       "server.js",
+      "LICENSE",
       "package.json"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "adoreATRI",
+        "repo": "ATRI_toolbox"
+      }
     ],
     "linux": {
       "syncDesktopName": true,

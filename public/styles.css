@@ -30,6 +30,7 @@ body {
   margin: 0;
   color: var(--ink);
   background: var(--bg);
+  overflow-anchor: none;
 }
 
 button,
@@ -213,6 +214,10 @@ input:focus {
   padding: 14px;
 }
 
+.workspace.is-prompt-collapsed {
+  grid-template-columns: 52px minmax(520px, 1fr);
+}
+
 .prompt-panel,
 .map-panel {
   min-width: 0;
@@ -227,6 +232,63 @@ input:focus {
   flex-direction: column;
   gap: 14px;
   padding: 16px;
+}
+
+.prompt-panel-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+}
+
+.panel-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.prompt-toggle-button {
+  width: 32px;
+  min-height: 32px;
+  border-radius: 6px;
+  font-size: 22px;
+}
+
+.prompt-toggle-icon {
+  display: block;
+  line-height: 1;
+  transition: transform 160ms ease;
+}
+
+.prompt-panel.is-collapsed {
+  align-items: center;
+  gap: 0;
+  padding: 10px 8px;
+}
+
+.prompt-panel.is-collapsed .panel-heading {
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: flex-start;
+}
+
+.prompt-panel.is-collapsed .panel-heading-actions {
+  order: -1;
+}
+
+.prompt-panel.is-collapsed .panel-heading label {
+  margin-top: 6px;
+  line-height: 1;
+  writing-mode: vertical-rl;
+}
+
+.prompt-panel.is-collapsed .status-badge {
+  display: none;
+}
+
+.prompt-panel.is-collapsed .prompt-toggle-icon {
+  transform: rotate(180deg);
 }
 
 .panel-heading,
@@ -499,6 +561,7 @@ button:disabled {
 @media (max-width: 820px) {
   .app-shell {
     grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .sidebar {
@@ -508,6 +571,13 @@ button:disabled {
     display: grid;
     grid-template-columns: 1fr auto;
     padding: 12px;
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .main {
+    grid-column: 1;
+    grid-row: 2;
   }
 
   .tool-nav {
@@ -535,6 +605,29 @@ button:disabled {
 
   .workspace {
     grid-template-columns: 1fr;
+  }
+
+  .workspace.is-prompt-collapsed {
+    grid-template-columns: 1fr;
+  }
+
+  .prompt-panel.is-collapsed {
+    min-height: 52px;
+    padding: 8px 12px;
+  }
+
+  .prompt-panel.is-collapsed .panel-heading {
+    width: 100%;
+    flex-direction: row;
+  }
+
+  .prompt-panel.is-collapsed .panel-heading-actions {
+    order: 0;
+  }
+
+  .prompt-panel.is-collapsed .panel-heading label {
+    margin-top: 0;
+    writing-mode: horizontal-tb;
   }
 
   .drawio-frame {

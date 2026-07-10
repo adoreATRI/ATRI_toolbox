@@ -45,20 +45,34 @@
         </header>
 
         <div class="workspace">
-          <section class="prompt-panel" aria-label="描述输入">
+          <section id="promptPanel" class="prompt-panel" aria-label="描述输入">
             <div class="panel-heading">
               <label for="descriptionInput">修改描述</label>
-              <span id="generationBadge" class="status-badge">当前导图</span>
+              <div class="panel-heading-actions">
+                <span id="generationBadge" class="status-badge">当前导图</span>
+                <button
+                  id="promptToggleButton"
+                  class="icon-button prompt-toggle-button"
+                  type="button"
+                  aria-controls="promptPanelBody"
+                  aria-expanded="true"
+                  title="收合修改描述"
+                >
+                  <span class="prompt-toggle-icon" aria-hidden="true">‹</span>
+                </button>
+              </div>
             </div>
-            <div class="prompt-composer">
-              <textarea
-                id="descriptionInput"
-                spellcheck="false"
-                rows="3"
-                placeholder="例如：在“模型生成”节点下添加一个“连接测试”子节点，备注写明需要检查接口地址、模型名和 API Key。"
-              ></textarea>
+            <div id="promptPanelBody" class="prompt-panel-body">
+              <div class="prompt-composer">
+                <textarea
+                  id="descriptionInput"
+                  spellcheck="false"
+                  rows="3"
+                  placeholder="例如：在“模型生成”节点下添加一个“连接测试”子节点，备注写明需要检查接口地址、模型名和 API Key。"
+                ></textarea>
+              </div>
+              <p id="statusText" class="status-text" role="status">已载入默认导图。</p>
             </div>
-            <p id="statusText" class="status-text" role="status">已载入默认导图。</p>
           </section>
 
           <section class="map-panel" aria-label="思维导图画布">

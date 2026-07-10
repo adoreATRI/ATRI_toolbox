@@ -88,6 +88,8 @@ jobs:
         with:
           name: ATRI Toolbox ${{ github.ref_name }}
           body: |
+            本版本包含 AI 描述增量编辑、跨平台自动更新、Ubuntu 退出修复和可收合的描述面板。
+
             Windows 用户可直接下载：
 
             - `ATRI Toolbox Setup *.exe`：安装版
@@ -99,6 +101,7 @@ jobs:
             - `*.deb`：Debian / Ubuntu 安装包
 
             当前版本未配置商业代码签名证书，Windows 首次运行时可能显示安全提醒。
+          generate_release_notes: true
           files: artifacts/*
           fail_on_unmatched_files: true
 

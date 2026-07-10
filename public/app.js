@@ -3,6 +3,7 @@ const STORAGE_KEYS = {
   drawioTitle: "atri.toolbox.drawio.title",
   legacyMap: "atri.toolbox.mindmap",
   settings: "atri.toolbox.llm.settings",
+  promptCollapsed: "atri.toolbox.prompt.collapsed",
 };
 
 const DEFAULT_MAP_TITLE = "ATRI思维导图";
@@ -55,6 +56,10 @@ const dom = {
   descriptionInput: document.querySelector("#descriptionInput"),
   statusText: document.querySelector("#statusText"),
   generationBadge: document.querySelector("#generationBadge"),
+  workspace: document.querySelector(".workspace"),
+  promptPanel: document.querySelector("#promptPanel"),
+  promptPanelBody: document.querySelector("#promptPanelBody"),
+  promptToggleButton: document.querySelector("#promptToggleButton"),
   newMapButton: document.querySelector("#newMapButton"),
   importButton: document.querySelector("#importButton"),
   exportButton: document.querySelector("#exportButton"),
@@ -79,10 +84,14 @@ const state = {
   isGenerating: false,
   aiUndoStack: [],
   mapTitleBeforeEdit: "",
+  isPromptCollapsed: loadPromptCollapsed(),
+  pageScrollPosition: { x: 0, y: 0 },
+  scrollRestoreTimer: 0,
 };
 
 loadSettingsIntoForm();
 syncMapTitleInput();
+syncPromptPanelState();
 bindEvents();
 saveDiagramState();
 loadDrawioEditor();
@@ -105,6 +114,7 @@ function bindEvents() {
 
   dom.testConnectionButton.addEventListener("click", testConnection);
   dom.descriptionInput.addEventListener("keydown", handleDescriptionKeydown);
+  dom.promptToggleButton.addEventListener("click", togglePromptPanel);
 
   dom.newMapButton.addEventListener("click", () => {
     replaceMindMap(createDefaultMap(), "已新建 draw.io 思维导图。", "当前导图");
@@ -126,6 +136,46 @@ function bindEvents() {
 
   window.addEventListener("message", handleDrawioMessage);
   window.addEventListener("keydown", handleGlobalKeydown, true);
+}
+
+function togglePromptPanel() {
+  const scrollPosition = {
+    x: window.scrollX,
+    y: window.scrollY,
+  };
+  state.isPromptCollapsed = !state.isPromptCollapsed;
+
+  try {
+    localStorage.setItem(STORAGE_KEYS.promptCollapsed, String(state.isPromptCollapsed));
+  } catch {
+    // The current session can still use the panel when storage is unavailable.
+  }
+
+  syncPromptPanelState();
+  window.requestAnimationFrame(() => {
+    window.scrollTo(scrollPosition.x, scrollPosition.y);
+  });
+
+  if (!state.isPromptCollapsed) {
+    dom.descriptionInput.focus();
+  }
+}
+
+function syncPromptPanelState() {
+  const collapsed = state.isPromptCollapsed;
+  dom.workspace.classList.toggle("is-prompt-collapsed", collapsed);
+  dom.promptPanel.classList.toggle("is-collapsed", collapsed);
+  dom.promptPanelBody.hidden = collapsed;
+  dom.promptToggleButton.setAttribute("aria-expanded", String(!collapsed));
+  dom.promptToggleButton.title = collapsed ? "展开修改描述" : "收合修改描述";
+}
+
+function loadPromptCollapsed() {
+  try {
+    return localStorage.getItem(STORAGE_KEYS.promptCollapsed) === "true";
+  } catch {
+    return false;
+  }
 }
 
 function handleDescriptionKeydown(event) {
@@ -155,6 +205,7 @@ function isUndoShortcut(event) {
 }
 
 function loadDrawioEditor() {
+  rememberPageScrollPosition();
   state.drawioReady = false;
   state.pendingLoad = true;
   dom.drawioFrame.src = `${DRAWIO_URL}&cacheBust=${Date.now()}`;
@@ -173,7 +224,7 @@ function handleDrawioMessage(event) {
 
   if (message.event === "init") {
     state.drawioReady = true;
-    sendDrawioLoad();
+    sendDrawioLoad(false);
     return;
   }
 
@@ -181,6 +232,7 @@ function handleDrawioMessage(event) {
     state.pendingLoad = false;
     setStatus(state.pendingStatus || "draw.io 编辑器已载入。");
     state.pendingStatus = "";
+    restorePageScrollPosition();
     return;
   }
 
@@ -217,7 +269,11 @@ function handleDrawioMessage(event) {
   }
 }
 
-function sendDrawioLoad() {
+function sendDrawioLoad(rememberScroll = true) {
+  if (rememberScroll) {
+    rememberPageScrollPosition();
+  }
+
   postDrawio({
     action: "load",
     xml: state.diagramXml,
@@ -227,6 +283,24 @@ function sendDrawioLoad() {
     noExitBtn: 1,
     saveAndExit: 0,
     exportProtocol: true,
+  });
+}
+
+function rememberPageScrollPosition() {
+  state.pageScrollPosition = {
+    x: Number(window.scrollX) || 0,
+    y: Number(window.scrollY) || 0,
+  };
+}
+
+function restorePageScrollPosition() {
+  const position = state.pageScrollPosition;
+  window.clearTimeout(state.scrollRestoreTimer);
+  window.requestAnimationFrame(() => {
+    window.scrollTo(position.x, position.y);
+    state.scrollRestoreTimer = window.setTimeout(() => {
+      window.scrollTo(position.x, position.y);
+    }, 120);
   });
 }
 
@@ -402,6 +476,7 @@ async function generateMindMap() {
   }
 
   let undoPushed = false;
+  let rollbackSnapshot = null;
   const previousBadge = dom.generationBadge.textContent;
   dom.descriptionInput.value = "";
   setAiEditLock(true, "已发送修改描述，正在等待返回；期间画布已锁定。");
@@ -414,7 +489,7 @@ async function generateMindMap() {
       commitPendingEditorXml();
     }
 
-    const currentMindMap = drawioXmlToMindMap(state.diagramXml, state.diagramTitle);
+    const currentDiagram = drawioXmlToDiagramSnapshot(state.diagramXml, state.diagramTitle);
     const response = await fetch("/api/mindmap/generate", {
       method: "POST",
       headers: {
@@ -422,8 +497,7 @@ async function generateMindMap() {
       },
       body: JSON.stringify({
         description,
-        currentMindMap,
-        selectedNodeTitle: currentMindMap.title,
+        currentDiagram,
         settings: loadSettings(),
       }),
     });
@@ -434,15 +508,59 @@ async function generateMindMap() {
       throw new Error(payload.message || "修改失败。");
     }
 
-    pushDescriptionUndoSnapshot(captureDiagramSnapshot());
+    if (!Array.isArray(payload.operations) || !payload.operations.length) {
+      throw new Error(payload.summary || "没有可应用的修改。");
+    }
+
+    const result = applyMindMapOperationsToDrawioXml(
+      state.diagramXml,
+      payload.operations,
+      state.diagramTitle,
+    );
+
+    rollbackSnapshot = captureDiagramSnapshot();
+    pushDescriptionUndoSnapshot(rollbackSnapshot);
     undoPushed = true;
-    replaceMindMap(payload.mindmap, payload.warning || "已更新 draw.io 思维导图。", payload.source === "llm" ? "模型生成" : "本地更新", {
-      merge: true,
-      keepUndoStack: true,
-    });
+    state.diagramXml = result.xml;
+    state.diagramTitle = result.title;
+    state.pendingEditorXml = "";
+    syncMapTitleInput();
+    saveDiagramState();
+    dom.generationBadge.textContent = payload.source === "llm" ? "模型修改" : "本地解析";
+    state.pendingStatus = payload.summary || `已应用 ${result.appliedCount} 项局部修改。`;
+    setStatus(state.pendingStatus);
+
+    if (state.drawioReady) {
+      sendDrawioLoad();
+    } else {
+      loadDrawioEditor();
+    }
+
+    rollbackSnapshot = null;
   } catch (error) {
     if (undoPushed) {
       state.aiUndoStack.pop();
+    }
+
+    if (rollbackSnapshot) {
+      state.diagramXml = rollbackSnapshot.xml;
+      state.diagramTitle = rollbackSnapshot.title || DEFAULT_MAP_TITLE;
+      state.pendingEditorXml = "";
+      syncMapTitleInput();
+
+      try {
+        saveDiagramState();
+      } catch {
+        // The in-memory snapshot is still restored when local storage is unavailable.
+      }
+
+      if (state.drawioReady) {
+        try {
+          sendDrawioLoad();
+        } catch {
+          // Keep the original error as the user-facing failure reason.
+        }
+      }
     }
 
     setStatus(error instanceof Error ? error.message : "修改失败。", true);
@@ -492,16 +610,11 @@ async function testConnection() {
   }
 }
 
-function replaceMindMap(input, message, badge, options = {}) {
+function replaceMindMap(input, message, badge) {
   const map = normalizeAppMap(input);
   state.diagramTitle = map.title || DEFAULT_MAP_TITLE;
-  state.diagramXml = options.merge
-    ? mergeMindMapIntoDrawioXml(state.diagramXml, map)
-    : mindMapToDrawioXml(map);
-
-  if (!options.keepUndoStack) {
-    state.aiUndoStack = [];
-  }
+  state.diagramXml = mindMapToDrawioXml(map);
+  state.aiUndoStack = [];
 
   syncMapTitleInput();
   saveDiagramState();
@@ -676,104 +789,215 @@ function mindMapToDrawioXml(input) {
   ].join("");
 }
 
-function mergeMindMapIntoDrawioXml(xml, input) {
-  const map = normalizeAppMap(input);
-  let documentXml;
-
-  try {
-    documentXml = parseXml(normalizeDrawioXml(xml, map.title));
-  } catch {
-    return mindMapToDrawioXml(map);
-  }
+function applyMindMapOperationsToDrawioXml(xml, operations, diagramTitle = DEFAULT_MAP_TITLE) {
+  const documentXml = parseXml(normalizeDrawioXml(xml, diagramTitle));
 
   if (!documentXml) {
-    return mindMapToDrawioXml(map);
+    throw new Error("当前 draw.io XML 无法解析，未应用任何修改。");
   }
 
   const graphRoot = documentXml.querySelector("root");
 
   if (!graphRoot) {
-    return mindMapToDrawioXml(map);
+    throw new Error("当前 draw.io 文件缺少图层根节点，未应用任何修改。");
   }
-
-  removeArtificialRootCells(graphRoot);
 
   const usedIds = collectUsedCellIds(graphRoot);
-  const vertexByTitle = collectVerticesByTitle(graphRoot);
-  const edgeByPair = collectEdgesByPair(graphRoot);
-  const items = flattenMapNodes(map.children);
-  const createdCellIds = new Set();
+  const verticesById = collectVertexCellsById(graphRoot);
+  const edgesById = collectEdgeCellsById(graphRoot);
+  let nextTitle = diagramTitle || DEFAULT_MAP_TITLE;
+  let appliedCount = 0;
 
-  for (const item of items) {
-    const key = titleKey(item.node.title);
+  for (const operation of operations) {
+    if (operation.type === "add_node") {
+      if (verticesById.has(operation.nodeId)) {
+        throw new Error(`节点 ID 已存在：${operation.nodeId}`);
+      }
 
-    if (!key) {
+      const cell = createOperationVertexCell(
+        documentXml,
+        graphRoot,
+        operation,
+        verticesById,
+        usedIds,
+      );
+      verticesById.set(operation.nodeId, cell);
+      appliedCount += 1;
       continue;
     }
 
-    let cell = vertexByTitle.get(key);
-
-    if (!cell) {
-      cell = createManagedVertexCell(documentXml, graphRoot, item, vertexByTitle, usedIds);
-      vertexByTitle.set(key, cell);
-      createdCellIds.add(cell.getAttribute("id"));
+    if (operation.type === "update_node") {
+      const cell = requireCell(verticesById, operation.nodeId, "节点");
+      const node = {
+        title: Object.hasOwn(operation, "title") ? operation.title : extractCellTitle(cell),
+        note: Object.hasOwn(operation, "note") ? operation.note : cell.getAttribute("atriNote") || "",
+      };
+      updateVertexCell(cell, node);
+      appliedCount += 1;
+      continue;
     }
 
-    updateVertexCell(cell, item.node);
+    if (operation.type === "remove_node") {
+      const cell = requireCell(verticesById, operation.nodeId, "节点");
+
+      for (const edge of Array.from(edgesById.values())) {
+        if (edge.getAttribute("source") === operation.nodeId || edge.getAttribute("target") === operation.nodeId) {
+          edgesById.delete(edge.getAttribute("id"));
+          edge.remove();
+        }
+      }
+
+      cell.remove();
+      verticesById.delete(operation.nodeId);
+      appliedCount += 1;
+      continue;
+    }
+
+    if (operation.type === "connect") {
+      const source = requireCell(verticesById, operation.sourceId, "起点节点");
+      const target = requireCell(verticesById, operation.targetId, "终点节点");
+      const arrow = normalizeRelationArrow(operation.arrow);
+      let edge = findEquivalentEdgeCell(
+        edgesById.values(),
+        operation.sourceId,
+        operation.targetId,
+        arrow,
+      );
+
+      if (!edge) {
+        positionNodeForConnection(graphRoot, source, target, {
+          relation: operation.label,
+          relationArrow: arrow,
+          relationLine: operation.line,
+        });
+        edge = createManagedEdgeCell(
+          documentXml,
+          graphRoot,
+          source,
+          target,
+          usedIds,
+          operation.edgeId,
+        );
+
+        if (edge.getAttribute("id") !== operation.edgeId) {
+          throw new Error(`连线 ID 冲突：${operation.edgeId}`);
+        }
+
+        edgesById.set(edge.getAttribute("id"), edge);
+      }
+
+      updateEdgeRelation(edge, {
+        relation: operation.label,
+        relationArrow: arrow,
+        relationLine: operation.line,
+      });
+      appliedCount += 1;
+      continue;
+    }
+
+    if (operation.type === "update_edge") {
+      const edge = requireCell(edgesById, operation.edgeId, "连线");
+      const current = extractEdgeRelationMeta(edge);
+      updateEdgeRelation(edge, {
+        relation: Object.hasOwn(operation, "label") ? operation.label : current.label,
+        relationArrow: Object.hasOwn(operation, "arrow") ? operation.arrow : current.arrow,
+        relationLine: Object.hasOwn(operation, "line") ? operation.line : current.line,
+      });
+      appliedCount += 1;
+      continue;
+    }
+
+    if (operation.type === "disconnect") {
+      const edge = requireCell(edgesById, operation.edgeId, "连线");
+      edge.remove();
+      edgesById.delete(operation.edgeId);
+      appliedCount += 1;
+      continue;
+    }
+
+    if (operation.type === "set_title") {
+      nextTitle = normalizeText(operation.title, 80) || nextTitle;
+      appliedCount += 1;
+      continue;
+    }
+
+    throw new Error(`不支持的思维导图操作：${operation.type || "(empty)"}`);
   }
 
-  for (const item of items) {
-    if (!item.parentTitle) {
-      continue;
-    }
+  updateDiagramMetadata(documentXml, nextTitle);
 
-    const source = vertexByTitle.get(titleKey(item.parentTitle));
-    const target = vertexByTitle.get(titleKey(item.node.title));
-
-    if (!source || !target) {
-      continue;
-    }
-
-    const pairKey = `${source.getAttribute("id")}->${target.getAttribute("id")}`;
-    const reversePairKey = `${target.getAttribute("id")}->${source.getAttribute("id")}`;
-    let edge = edgeByPair.get(pairKey);
-    let edgeWasMissing = !edge;
-
-    if (!edge && normalizeRelationArrow(item.node.relationArrow) === "none") {
-      edge = edgeByPair.get(reversePairKey);
-      edgeWasMissing = !edge;
-    }
-
-    if (!edge) {
-      edge = createManagedEdgeCell(documentXml, graphRoot, source, target, usedIds);
-      edgeByPair.set(pairKey, edge);
-    }
-
-    repositionRelatedNodeIfNeeded(graphRoot, item, source, target, edgeWasMissing, createdCellIds);
-    updateEdgeRelation(edge, item.node);
-  }
-
-  updateDiagramMetadata(documentXml, map.title);
-  return new XMLSerializer().serializeToString(documentXml);
+  return {
+    xml: new XMLSerializer().serializeToString(documentXml),
+    title: nextTitle,
+    appliedCount,
+  };
 }
 
-function removeArtificialRootCells(graphRoot) {
-  const rootCell = graphRoot.querySelector('mxCell[id="atri-root"]');
+function drawioXmlToDiagramSnapshot(xml, fallbackTitle = DEFAULT_MAP_TITLE) {
+  const documentXml = parseXml(xml);
 
-  if (!rootCell) {
-    return;
+  if (!documentXml) {
+    return {
+      title: fallbackTitle,
+      nodes: [],
+      edges: [],
+    };
   }
 
-  const rootId = rootCell.getAttribute("id");
-  const rootEdges = Array.from(graphRoot.querySelectorAll("mxCell")).filter((cell) => (
-    cell.getAttribute("source") === rootId || cell.getAttribute("target") === rootId
-  ));
+  const graphRoot = documentXml.querySelector("root");
 
-  for (const edge of rootEdges) {
-    edge.remove();
+  if (!graphRoot) {
+    return {
+      title: fallbackTitle,
+      nodes: [],
+      edges: [],
+    };
   }
 
-  rootCell.remove();
+  const vertices = getVertexCells(graphRoot)
+    .filter((cell) => cell.getAttribute("id") !== "atri-root");
+  const vertexIds = new Set(vertices.map((cell) => cell.getAttribute("id")).filter(Boolean));
+  const nodes = vertices.map((cell) => {
+    const geometry = getCellGeometry(cell);
+
+    return {
+      id: cell.getAttribute("id"),
+      title: extractCellTitle(cell),
+      note: cell.getAttribute("atriNote") || "",
+      x: geometry?.x || 0,
+      y: geometry?.y || 0,
+      width: geometry?.width || LAYOUT.nodeWidth,
+      height: geometry?.height || LAYOUT.nodeHeight,
+    };
+  });
+  const edges = Array.from(graphRoot.querySelectorAll('mxCell[edge="1"]'))
+    .filter((edge) => (
+      vertexIds.has(edge.getAttribute("source"))
+      && vertexIds.has(edge.getAttribute("target"))
+    ))
+    .map((edge) => {
+      const relation = extractEdgeRelationMeta(edge);
+      return {
+        id: edge.getAttribute("id"),
+        sourceId: edge.getAttribute("source"),
+        targetId: edge.getAttribute("target"),
+        label: relation.label,
+        arrow: relation.arrow,
+        line: relation.line,
+      };
+    });
+  const title = documentXml.querySelector("diagram")?.getAttribute("name")
+    || fallbackTitle
+    || DEFAULT_MAP_TITLE;
+
+  return {
+    title,
+    nodes,
+    edges,
+    cellIds: Array.from(graphRoot.querySelectorAll("mxCell"))
+      .map((cell) => cell.getAttribute("id"))
+      .filter(Boolean),
+  };
 }
 
 function collectUsedCellIds(graphRoot) {
@@ -782,57 +1006,30 @@ function collectUsedCellIds(graphRoot) {
     .filter(Boolean));
 }
 
-function collectVerticesByTitle(graphRoot) {
-  const vertices = Array.from(graphRoot.querySelectorAll('mxCell[vertex="1"]'));
-  const byTitle = new Map();
-
-  for (const cell of vertices) {
-    const key = titleKey(extractCellTitle(cell));
-
-    if (key && !byTitle.has(key)) {
-      byTitle.set(key, cell);
-    }
-  }
-
-  return byTitle;
+function collectEdgeCellsById(graphRoot) {
+  return new Map(Array.from(graphRoot.querySelectorAll('mxCell[edge="1"]'))
+    .map((cell) => [cell.getAttribute("id"), cell])
+    .filter(([id]) => Boolean(id)));
 }
 
-function collectEdgesByPair(graphRoot) {
-  const edges = Array.from(graphRoot.querySelectorAll('mxCell[edge="1"]'));
-  const byPair = new Map();
+function createOperationVertexCell(documentXml, graphRoot, operation, verticesById, usedIds) {
+  const id = resolveCellId(operation.nodeId, usedIds);
 
-  for (const edge of edges) {
-    const source = edge.getAttribute("source");
-    const target = edge.getAttribute("target");
-
-    if (source && target) {
-      byPair.set(`${source}->${target}`, edge);
-    }
+  if (id !== operation.nodeId) {
+    throw new Error(`节点 ID 冲突：${operation.nodeId}`);
   }
 
-  return byPair;
-}
-
-function flattenMapNodes(nodes, parentTitle = "") {
-  const items = [];
-
-  for (const node of nodes || []) {
-    items.push({
-      node,
-      parentTitle,
-    });
-    items.push(...flattenMapNodes(node.children, node.title));
-  }
-
-  return items;
-}
-
-function createManagedVertexCell(documentXml, graphRoot, item, vertexByTitle, usedIds) {
-  const id = resolveCellId(item.node.id || createId(), usedIds);
   const cell = documentXml.createElement("mxCell");
   const geometry = documentXml.createElement("mxGeometry");
-  const position = getNewNodePosition(item, vertexByTitle, graphRoot);
-  const size = measureNodeSize(item.node);
+  const node = {
+    title: operation.title,
+    note: operation.note || "",
+  };
+  const nearCell = operation.nearNodeId ? verticesById.get(operation.nearNodeId) : null;
+  const position = nearCell
+    ? getRelatedNodePosition(graphRoot, nearCell, node, null)
+    : getIndependentNodePosition(graphRoot);
+  const size = measureNodeSize(node);
 
   cell.setAttribute("id", id);
   cell.setAttribute("vertex", "1");
@@ -844,25 +1041,16 @@ function createManagedVertexCell(documentXml, graphRoot, item, vertexByTitle, us
   geometry.setAttribute("height", String(size.height));
   geometry.setAttribute("as", "geometry");
   cell.appendChild(geometry);
+  updateVertexCell(cell, node);
   graphRoot.appendChild(cell);
   return cell;
 }
 
-function getNewNodePosition(item, vertexByTitle, graphRoot) {
-  const parentCell = item.parentTitle ? vertexByTitle.get(titleKey(item.parentTitle)) : null;
-
-  if (parentCell) {
-    return getRelatedNodePosition(graphRoot, parentCell, item.node, null);
-  }
-
-  const existingGeometries = Array.from(vertexByTitle.values())
-    .map((cell) => cell.querySelector("mxGeometry"))
-    .filter(Boolean);
-  const maxY = existingGeometries.reduce((value, geometry) => {
-    const y = Number(geometry.getAttribute("y"));
-    const height = Number(geometry.getAttribute("height")) || 52;
-    return Number.isFinite(y) ? Math.max(value, y + height) : value;
-  }, 28);
+function getIndependentNodePosition(graphRoot) {
+  const maxY = getVertexCells(graphRoot).reduce((value, cell) => {
+    const geometry = getCellGeometry(cell);
+    return geometry ? Math.max(value, geometry.y + geometry.height) : value;
+  }, LAYOUT.topY - 72);
 
   return {
     x: LAYOUT.topX,
@@ -870,38 +1058,67 @@ function getNewNodePosition(item, vertexByTitle, graphRoot) {
   };
 }
 
-function repositionRelatedNodeIfNeeded(graphRoot, item, source, target, edgeWasMissing, createdCellIds) {
-  const targetId = target.getAttribute("id");
+function requireCell(cellsById, id, label) {
+  const cell = cellsById.get(id);
 
-  if (!edgeWasMissing || createdCellIds.has(targetId)) {
+  if (!cell) {
+    throw new Error(`${label}不存在：${id || "(empty)"}`);
+  }
+
+  return cell;
+}
+
+function findEquivalentEdgeCell(edges, sourceId, targetId, arrow) {
+  for (const edge of edges) {
+    if (edge.getAttribute("source") === sourceId && edge.getAttribute("target") === targetId) {
+      return edge;
+    }
+
+    if (
+      arrow === "none"
+      && extractEdgeRelationMeta(edge).arrow === "none"
+      && edge.getAttribute("source") === targetId
+      && edge.getAttribute("target") === sourceId
+    ) {
+      return edge;
+    }
+  }
+
+  return null;
+}
+
+function positionNodeForConnection(graphRoot, source, target, node) {
+  const sourceConnections = getConnectedVertexCells(graphRoot, source).length;
+  const targetConnections = getConnectedVertexCells(graphRoot, target).length;
+  let anchor = source;
+  let moving = target;
+  let preferredSide = 0;
+
+  if (targetConnections > 0 && sourceConnections === 0) {
+    anchor = target;
+    moving = source;
+    preferredSide = normalizeRelationArrow(node?.relationArrow) === "none" ? 0 : -1;
+  } else if (targetConnections > 0) {
     return;
   }
 
-  const current = getCellGeometry(target);
-  const next = getRelatedNodePosition(graphRoot, source, item.node, target);
+  const current = getCellGeometry(moving);
+  const next = getRelatedNodePosition(graphRoot, anchor, node, moving, preferredSide);
 
   if (!current || !next) {
     return;
   }
 
-  const dx = Math.round(next.x - current.x);
-  const dy = Math.round(next.y - current.y);
-
-  if (!dx && !dy) {
-    return;
-  }
-
-  translateCellSubtree(graphRoot, target, dx, dy, new Set([source.getAttribute("id")]));
+  translateCell(moving, Math.round(next.x - current.x), Math.round(next.y - current.y));
 }
-
-function getRelatedNodePosition(graphRoot, parentCell, node, targetCell) {
+function getRelatedNodePosition(graphRoot, parentCell, node, targetCell, preferredSide = 0) {
   const parentGeometry = getCellGeometry(parentCell);
 
   if (!parentGeometry) {
     return null;
   }
 
-  const side = chooseRelationSide(graphRoot, parentCell, node);
+  const side = preferredSide || chooseRelationSide(graphRoot, parentCell, node);
   const targetGeometry = getCellGeometry(targetCell) || {
     width: LAYOUT.nodeWidth,
     height: measureNodeSize(node).height,
@@ -979,29 +1196,6 @@ function getConnectedVertexCells(graphRoot, cell) {
       return null;
     })
     .filter(Boolean);
-}
-
-function translateCellSubtree(graphRoot, cell, dx, dy, blockedIds = new Set(), visited = new Set()) {
-  const id = cell.getAttribute("id");
-
-  if (!id || visited.has(id) || blockedIds.has(id)) {
-    return;
-  }
-
-  visited.add(id);
-  translateCell(cell, dx, dy);
-
-  const byId = collectVertexCellsById(graphRoot);
-  const childEdges = Array.from(graphRoot.querySelectorAll('mxCell[edge="1"]'))
-    .filter((edge) => edge.getAttribute("source") === id);
-
-  for (const edge of childEdges) {
-    const child = byId.get(edge.getAttribute("target"));
-
-    if (child) {
-      translateCellSubtree(graphRoot, child, dx, dy, blockedIds, visited);
-    }
-  }
 }
 
 function translateCell(cell, dx, dy) {
@@ -1132,13 +1326,13 @@ function updateVertexCell(cell, node) {
   }
 }
 
-function createManagedEdgeCell(documentXml, graphRoot, source, target, usedIds) {
+function createManagedEdgeCell(documentXml, graphRoot, source, target, usedIds, preferredId = "") {
   const edge = documentXml.createElement("mxCell");
   const geometry = documentXml.createElement("mxGeometry");
   const sourceId = source.getAttribute("id");
   const targetId = target.getAttribute("id");
 
-  edge.setAttribute("id", resolveCellId(`${sourceId}-${targetId}-edge`, usedIds));
+  edge.setAttribute("id", resolveCellId(preferredId || `${sourceId}-${targetId}-edge`, usedIds));
   edge.setAttribute("edge", "1");
   edge.setAttribute("parent", "1");
   edge.setAttribute("source", sourceId);
@@ -1188,10 +1382,6 @@ function updateDiagramMetadata(documentXml, title) {
   if (mxfile) {
     mxfile.setAttribute("modified", new Date().toISOString());
   }
-}
-
-function titleKey(title) {
-  return normalizeText(title || "", 80).toLocaleLowerCase();
 }
 
 function layoutTopLevelNodes(nodes, cells, edges, idMap, usedIds) {
@@ -1400,90 +1590,6 @@ function inferLineFromEdgeStyle(style) {
   }
 
   return "solid";
-}
-
-function drawioXmlToMindMap(xml, fallbackTitle = DEFAULT_MAP_TITLE) {
-  const documentXml = parseXml(xml);
-
-  if (!documentXml) {
-    return createDefaultMap();
-  }
-
-  const cells = Array.from(documentXml.querySelectorAll("mxCell"));
-  const vertices = cells.filter((cell) => cell.getAttribute("vertex") === "1");
-  const edges = cells.filter((cell) => cell.getAttribute("edge") === "1");
-
-  if (!vertices.length) {
-    return {
-      title: fallbackTitle || DEFAULT_MAP_TITLE,
-      note: "",
-      children: [],
-    };
-  }
-
-  const incoming = new Map();
-  const edgeRelationByTarget = new Map();
-  const childrenBySource = new Map();
-
-  for (const edge of edges) {
-    const source = edge.getAttribute("source");
-    const target = edge.getAttribute("target");
-
-    if (!source || !target) {
-      continue;
-    }
-
-    incoming.set(target, source);
-    edgeRelationByTarget.set(target, extractEdgeRelationMeta(edge));
-
-    if (!childrenBySource.has(source)) {
-      childrenBySource.set(source, []);
-    }
-
-    childrenBySource.get(source).push(target);
-  }
-
-  const vertexById = new Map(vertices.map((cell) => [cell.getAttribute("id"), cell]));
-  const rootCell = vertexById.get("atri-root") || null;
-  const rootId = rootCell?.getAttribute("id") || "";
-  const visited = new Set();
-
-  function toNode(cell) {
-    const id = cell.getAttribute("id") || createId();
-    visited.add(id);
-    const node = {
-      id,
-      title: extractCellTitle(cell),
-      note: cell.getAttribute("atriNote") || "",
-      relation: edgeRelationByTarget.get(id)?.label || "",
-      relationArrow: edgeRelationByTarget.get(id)?.arrow || "forward",
-      relationLine: edgeRelationByTarget.get(id)?.line || "solid",
-      children: [],
-    };
-
-    const childIds = childrenBySource.get(id) || [];
-    node.children = childIds
-      .map((childId) => vertexById.get(childId))
-      .filter(Boolean)
-      .map(toNode);
-    return node;
-  }
-
-  const rootNode = rootCell ? toNode(rootCell) : null;
-  const topLevelNodes = rootNode
-    ? rootNode.children
-    : vertices
-      .filter((cell) => !incoming.has(cell.getAttribute("id")))
-      .map(toNode);
-  const orphanNodes = vertices
-    .filter((cell) => !visited.has(cell.getAttribute("id")) && cell.getAttribute("id") !== rootId)
-    .map(toNode);
-
-  return normalizeAppMap({
-    title: rootNode?.title || fallbackTitle || DEFAULT_MAP_TITLE,
-    note: rootNode?.note || "",
-    children: [...topLevelNodes, ...orphanNodes],
-  });
 }
 
 function extractEdgeRelationMeta(edge) {
@@ -1759,3 +1865,9 @@ function clamp(value, min, max) {
 function createId() {
   return `node-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }
+
+export {
+  applyMindMapOperationsToDrawioXml,
+  drawioXmlToDiagramSnapshot,
+  mindMapToDrawioXml,
+};
