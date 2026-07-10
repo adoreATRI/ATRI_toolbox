@@ -6,19 +6,32 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    name: Build and publish desktop release
-    runs-on: ubuntu-latest
+  build:
+    name: Build ${{ matrix.name }} package
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            target: win
+            artifact: windows-release
+          - name: Linux
+            os: ubuntu-latest
+            target: linux
+            artifact: linux-release
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
@@ -29,68 +42,75 @@ jobs:
       - name: Check sources
         run: npm run check
 
-      - name: Install Windows packaging runtime
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends wine wine64
-          wine --version
+      - name: Build package
+        run: npm run package:${{ matrix.target }} -- --publish never
 
-      - name: Build Windows packages
-        run: npm run package:win -- --publish never
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            release/*.exe
+            release/*.AppImage
+            release/*.deb
+            release/*.blockmap
+            release/latest*.yml
+          if-no-files-found: error
+          retention-days: 7
 
-      - name: Build Linux packages
-        run: npm run package:linux -- --publish never
+  release:
+    name: Publish desktop release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: build
+    permissions:
+      contents: write
 
-      - name: Collect release assets
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Verify tag matches package version
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p artifacts
-          find release -maxdepth 1 -type f \( -name "*.exe" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.blockmap" -o -name "latest.yml" -o -name "latest-linux.yml" \) -exec cp {} artifacts/ \;
-          test "$(find artifacts -type f | wc -l)" -gt 0
-          ls -lh artifacts
+          expected_tag="v$(node -p "require('./package.json').version")"
+          test "$GITHUB_REF_NAME" = "$expected_tag"
+
+      - name: Download package artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
 
       - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: ATRI Toolbox ${{ github.ref_name }}
+          body: |
+            Windows 用户可直接下载：
+
+            - `ATRI Toolbox Setup *.exe`：安装版
+            - `ATRI Toolbox *.exe`：便携版，下载后直接运行
+
+            Linux 用户可直接下载：
+
+            - `*.AppImage`：通用便携版
+            - `*.deb`：Debian / Ubuntu 安装包
+
+            当前版本未配置商业代码签名证书，Windows 首次运行时可能显示安全提醒。
+          files: artifacts/*
+          fail_on_unmatched_files: true
+
+      - name: Verify published assets
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ github.ref_name }}
-          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          mapfile -t assets < <(find artifacts -type f | sort)
+          published_assets=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name')
 
-          if [ "${#assets[@]}" -eq 0 ]; then
-            echo "No release assets were generated." >&2
-            exit 1
-          fi
-
-          printf "Publishing release assets:\n"
-          printf " - %s\n" "${assets[@]}"
-
-          notes=$(cat <<'NOTES'
-          Windows 用户可直接下载：
-
-          - `ATRI Toolbox Setup *.exe`：安装版
-          - `ATRI Toolbox *.exe`：便携版，下载后直接运行
-
-          Linux 用户可直接下载：
-
-          - `*.AppImage`：通用便携版
-          - `*.deb`：Debian / Ubuntu 安装包
-
-          当前版本未配置商业代码签名证书，Windows 首次运行时可能显示安全提醒。
-          NOTES
-          )
-
-          if gh release view "$TAG_NAME" --repo "$REPOSITORY" >/dev/null 2>&1; then
-            gh release delete "$TAG_NAME" --yes --repo "$REPOSITORY"
-          fi
-
-          gh release create "$TAG_NAME" "${assets[@]}" --title "ATRI Toolbox $TAG_NAME" --notes "$notes" --repo "$REPOSITORY" --verify-tag
-
-          published_count=$(gh release view "$TAG_NAME" --repo "$REPOSITORY" --json assets --jq ".assets | length")
-          if [ "$published_count" -ne "${#assets[@]}" ]; then
-            echo "Expected ${#assets[@]} release assets, but GitHub reports $published_count." >&2
-            exit 1
-          fi
+          while IFS= read -r asset; do
+            name=$(basename "$asset")
+            grep -Fxq "$name" <<<"$published_assets"
+          done < <(find artifacts -maxdepth 1 -type f | sort)

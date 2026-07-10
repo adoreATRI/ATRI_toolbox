@@ -23,6 +23,14 @@ export function createToolboxServer() {
     try {
       const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
 
+      if (!isAllowedRequestOrigin(request)) {
+        sendJson(response, 403, {
+          error: "forbidden_origin",
+          message: "Requests are only accepted from the local ATRI Toolbox window.",
+        });
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/api/mindmap/generate") {
         await handleMindMapGeneration(request, response);
         return;
@@ -34,7 +42,7 @@ export function createToolboxServer() {
       }
 
       if (request.method === "OPTIONS") {
-        response.writeHead(204, corsHeaders());
+        response.writeHead(204);
         response.end();
         return;
       }
@@ -976,18 +984,21 @@ function isPathInside(filePath, directory) {
 
 function sendJson(response, status, payload) {
   response.writeHead(status, {
-    ...corsHeaders(),
     "Content-Type": "application/json; charset=utf-8",
+    "X-Content-Type-Options": "nosniff",
   });
   response.end(JSON.stringify(payload));
 }
 
-function corsHeaders() {
-  return {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  };
+function isAllowedRequestOrigin(request) {
+  const origin = request.headers.origin;
+
+  if (!origin) {
+    return true;
+  }
+
+  const localPort = request.socket.localPort;
+  return origin === `http://127.0.0.1:${localPort}` || origin === `http://localhost:${localPort}`;
 }
 
 export function startServer(port = defaultPort, options = {}) {

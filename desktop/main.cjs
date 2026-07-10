@@ -66,16 +66,17 @@ async function createMainWindow() {
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    openExternalUrl(url);
     return { action: "deny" };
   });
 
   mainWindow.webContents.on("will-navigate", (event, url) => {
-    const localOrigin = `http://127.0.0.1:${runtime.port}`;
+    const localOrigin = new URL(`http://127.0.0.1:${runtime.port}`).origin;
+    const targetOrigin = getUrlOrigin(url);
 
-    if (!url.startsWith(localOrigin)) {
+    if (targetOrigin !== localOrigin) {
       event.preventDefault();
-      shell.openExternal(url);
+      openExternalUrl(url);
     }
   });
 
@@ -134,6 +135,28 @@ function sanitizeDimension(value, fallback, minimum) {
   }
 
   return Math.min(Math.max(number, minimum), 3200);
+}
+
+function getUrlOrigin(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "";
+  }
+}
+
+function openExternalUrl(url) {
+  try {
+    const target = new URL(url);
+
+    if (target.protocol === "http:" || target.protocol === "https:") {
+      shell.openExternal(target.href).catch((error) => {
+        console.warn("Failed to open external URL:", error);
+      });
+    }
+  } catch {
+    // Ignore malformed or unsafe external URLs.
+  }
 }
 
 function createApplicationMenu() {

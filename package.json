@@ -1,8 +1,9 @@
 {
   "name": "atri-toolbox",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Cross-platform local toolbox for ATRI utilities.",
+  "desktopName": "atri-toolbox.desktop",
   "author": {
     "name": "ATRI",
     "email": "makochishima043@gmail.com"
@@ -13,20 +14,23 @@
     "start": "node desktop/launch.cjs",
     "dev": "node desktop/launch.cjs",
     "serve": "node server.js",
-    "check": "node --check server.js && node --check desktop/main.cjs && node --check desktop/launch.cjs",
+    "check:syntax": "node --check server.js && node --check desktop/main.cjs && node --check desktop/launch.cjs && node --check public/app.js",
+    "test": "node --test",
+    "check": "npm run check:syntax && npm test",
     "package:linux": "electron-builder --linux",
     "package:win": "electron-builder --win"
   },
   "engines": {
-    "node": ">=18.17"
+    "node": ">=22.12"
   },
   "devDependencies": {
-    "electron": "^31.0.0",
-    "electron-builder": "^24.13.3"
+    "electron": "^43.1.0",
+    "electron-builder": "^26.15.3"
   },
   "build": {
     "appId": "com.atri.toolbox",
     "productName": "ATRI Toolbox",
+    "icon": "public/assets/atri-logo.png",
     "directories": {
       "output": "release"
     },
@@ -37,6 +41,7 @@
       "package.json"
     ],
     "linux": {
+      "syncDesktopName": true,
       "target": [
         "AppImage",
         "deb"

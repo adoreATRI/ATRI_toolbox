@@ -2,7 +2,7 @@
 
 ![状态](https://img.shields.io/badge/状态-alpha-c6533d)
 ![平台](https://img.shields.io/badge/平台-Windows%20%7C%20Linux-2f6f6d)
-![Electron](https://img.shields.io/badge/Electron-31-47848f)
+![Electron](https://img.shields.io/badge/Electron-43-47848f)
 
 ATRI Toolbox 是基于大模型辅助的工具箱
 
@@ -20,7 +20,12 @@ ATRI Toolbox 是基于大模型辅助的工具箱
 
 ## 下载
 
-Windows 用户可以在 GitHub Releases 中下载安装版或便携版，无需本地编译。
+前往 [GitHub Releases](https://github.com/adoreATRI/ATRI_toolbox/releases/latest) 下载已构建版本，无需自行编译。
+
+- Windows：提供安装版和便携版 `.exe`
+- Linux：提供通用 `.AppImage` 和 Debian / Ubuntu `.deb`
+
+应用内的 draw.io 编辑器和大模型接口需要网络连接。
 
 ## 配置
 
