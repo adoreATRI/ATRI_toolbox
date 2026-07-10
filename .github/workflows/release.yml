@@ -108,9 +108,28 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          published_assets=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name')
+          mapfile -t expected_assets < <(find artifacts -maxdepth 1 -type f | sort)
 
-          while IFS= read -r asset; do
-            name=$(basename "$asset")
-            grep -Fxq "$name" <<<"$published_assets"
-          done < <(find artifacts -maxdepth 1 -type f | sort)
+          for attempt in {1..6}; do
+            published_assets=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' || true)
+            missing_assets=()
+
+            for asset in "${expected_assets[@]}"; do
+              name=$(basename "$asset")
+
+              if ! grep -Fxq "$name" <<<"$published_assets"; then
+                missing_assets+=("$name")
+              fi
+            done
+
+            if [ "${#missing_assets[@]}" -eq 0 ]; then
+              printf "Verified %s release assets.\n" "${#expected_assets[@]}"
+              exit 0
+            fi
+
+            printf "Asset list is not ready (attempt %s/6). Missing:\n" "$attempt"
+            printf " - %s\n" "${missing_assets[@]}"
+            sleep 5
+          done
+
+          exit 1
