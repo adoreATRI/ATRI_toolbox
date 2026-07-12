@@ -14,6 +14,7 @@ const {
 } = require("../desktop/history.cjs");
 const { createShutdownCoordinator } = require("../desktop/shutdown.cjs");
 const { createDiagramFileController } = require("../desktop/diagram-file.cjs");
+const { createLineFilter } = require("../desktop/log-filter.cjs");
 const { createSettingsStore } = require("../desktop/settings-store.cjs");
 const { createUpdateController } = require("../desktop/updater.cjs");
 
@@ -165,6 +166,20 @@ test("desktop shortcut bridge ignores redo and repeated input", () => {
   assert.equal(isUndoInput({ type: "keyDown", key: "z", control: true, isAutoRepeat: true }), false);
   assert.equal(isUndoInput({ type: "keyUp", key: "z", control: true }), false);
   assert.equal(isUndoInput({ type: "keyDown", key: "z", meta: true }), true);
+});
+
+test("development launcher hides only known Chromium startup diagnostics", () => {
+  let output = "";
+  const filter = createLineFilter((text) => {
+    output += text;
+  });
+
+  filter.push("MESA-LOADER: failed to open dri: /usr/lib/x86_64-linux-gnu/gbm/dri_gbm.so:");
+  filter.push(" Permission denied\nimportant Electron failure\n");
+  filter.push("[10:ERROR:ui/gfx/x/atom_cache.cc:234] Add application/vnd.portal.files to kAtomsToCache\n");
+  filter.flush();
+
+  assert.equal(output, "important Electron failure\n");
 });
 
 test("an imported draw.io file remains active and receives later saves", async (context) => {
