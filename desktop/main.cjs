@@ -1,19 +1,35 @@
-const { app, BrowserWindow, dialog, Menu, shell } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  Menu,
+  safeStorage,
+  shell,
+} = require("electron");
 const { autoUpdater } = require("electron-updater");
 const fs = require("node:fs");
 const path = require("node:path");
 
 const { createShutdownCoordinator } = require("./shutdown.cjs");
+const { bindHistoryShortcuts, createHistoryController } = require("./history.cjs");
+const { createDiagramFileController } = require("./diagram-file.cjs");
+const { createSettingsStore } = require("./settings-store.cjs");
 const { createUpdateController } = require("./updater.cjs");
 
 let mainWindow = null;
 let serverRuntime = null;
 let startServer = null;
 let cleanupPromise = null;
+let diagramFileController = null;
+let settingsStore = null;
 const updateController = createUpdateController({
   app,
   updater: autoUpdater,
   showDialog: showAppDialog,
+  getWindow: () => mainWindow,
+});
+const historyController = createHistoryController({
   getWindow: () => mainWindow,
 });
 
@@ -52,6 +68,7 @@ async function createMainWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      preload: path.join(__dirname, "preload.cjs"),
       sandbox: true,
     },
   });
@@ -78,6 +95,7 @@ async function createMainWindow() {
     openExternalUrl(url);
     return { action: "deny" };
   });
+  bindHistoryShortcuts(mainWindow.webContents, historyController);
 
   mainWindow.webContents.on("will-navigate", (event, url) => {
     const localOrigin = new URL(`http://127.0.0.1:${runtime.port}`).origin;
@@ -181,7 +199,10 @@ function createApplicationMenu() {
     {
       label: "编辑",
       submenu: [
-        { role: "undo", label: "撤销" },
+        {
+          label: "撤销",
+          click: () => historyController.undo(),
+        },
         { role: "redo", label: "重做" },
         { type: "separator" },
         { role: "cut", label: "剪切" },
@@ -231,8 +252,55 @@ function showAppDialog(options) {
   return dialog.showMessageBox(options);
 }
 
+function setupDesktopBridge() {
+  if (diagramFileController || settingsStore) {
+    return;
+  }
+
+  const userDataPath = app.getPath("userData");
+  diagramFileController = createDiagramFileController({
+    statePath: path.join(userDataPath, "active-diagram.json"),
+    showOpenDialog: (options) => {
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        throw new Error("主窗口尚未准备好。");
+      }
+
+      return dialog.showOpenDialog(mainWindow, options);
+    },
+  });
+  settingsStore = createSettingsStore({
+    filePath: path.join(userDataPath, "model-settings.json"),
+    safeStorage,
+  });
+
+  registerTrustedHandler("atri:diagram:open", () => diagramFileController.openDiagram());
+  registerTrustedHandler("atri:diagram:restore", () => diagramFileController.restoreActiveDiagram());
+  registerTrustedHandler("atri:diagram:save", (_event, payload) => diagramFileController.saveActiveDiagram(payload));
+  registerTrustedHandler("atri:diagram:clear", () => diagramFileController.clearActiveDiagram());
+  registerTrustedHandler("atri:settings:load", () => settingsStore.load());
+  registerTrustedHandler("atri:settings:save", (_event, payload) => settingsStore.save(payload));
+}
+
+function registerTrustedHandler(channel, handler) {
+  ipcMain.handle(channel, (event, ...args) => {
+    const trustedContents = mainWindow?.webContents;
+
+    if (
+      !trustedContents
+      || trustedContents.isDestroyed()
+      || event.sender !== trustedContents
+      || event.senderFrame !== trustedContents.mainFrame
+    ) {
+      throw new Error("拒绝来自非受信页面的桌面操作。");
+    }
+
+    return handler(event, ...args);
+  });
+}
+
 app.whenReady().then(async () => {
   createApplicationMenu();
+  setupDesktopBridge();
   await createMainWindow();
   updateController.setup();
 

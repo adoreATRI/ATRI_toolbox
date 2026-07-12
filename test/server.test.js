@@ -4,6 +4,7 @@ import { after, before, test } from "node:test";
 import {
   buildMindMapOperationMessages,
   createLocalOperationPlan,
+  normalizeGeneratedNodeContent,
   normalizeOperationPlan,
 } from "../mindmap-ai.js";
 import { generateMindMapOperations, startServer } from "../server.js";
@@ -85,6 +86,12 @@ test("serves the application from the local service", async (context) => {
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type"), /^text\/html/);
   assert.match(html, /ATRI Toolbox/);
+
+  const vendorResponse = await fetch(`${baseUrl}/vendor/dagre.esm.js`);
+  const vendorSource = await vendorResponse.text();
+  assert.equal(vendorResponse.status, 200);
+  assert.match(vendorResponse.headers.get("content-type"), /^text\/javascript/);
+  assert.match(vendorSource, /dagre/);
 });
 
 test("rejects browser requests from foreign origins", async (context) => {
@@ -113,6 +120,69 @@ test("creates every explicitly named node as independent operations", () => {
   assert.deepEqual(plan.operations.map((operation) => operation.type), ["add_node", "add_node"]);
   assert.deepEqual(plan.operations.map((operation) => operation.title), ["兰斯", "希露"]);
   assert.equal(plan.operations.some((operation) => operation.type === "connect"), false);
+});
+
+test("separates generated node names from explicit notes", () => {
+  const cases = [
+    ["创建一个名为兰斯的节点，备注为近卫骑士", "兰斯", "近卫骑士"],
+    ["生成节点，名字是兰斯，备注是近卫骑士", "兰斯", "近卫骑士"],
+    ["新增角色兰斯，身份是近卫骑士", "兰斯", "近卫骑士"],
+    ["创建兰斯，他是近卫骑士", "兰斯", "近卫骑士"],
+    ["创建一个节点兰斯，他的职业是近卫骑士", "兰斯", "近卫骑士"],
+    ["创建兰斯（近卫骑士）节点", "兰斯", "近卫骑士"],
+  ];
+
+  for (const [description, title, noteText] of cases) {
+    const plan = createLocalOperationPlan(diagram(), description);
+    assert.deepEqual(plan.operations, [{
+      type: "add_node",
+      nodeId: "new-1",
+      title,
+      note: noteText,
+    }]);
+  }
+});
+
+test("keeps per-node notes and rejects ambiguous shared notes", () => {
+  const explicit = createLocalOperationPlan(
+    diagram(),
+    "生成两个节点：兰斯（近卫骑士）、希露（女仆）",
+  );
+  const shared = createLocalOperationPlan(diagram(), "创建兰斯和希露，备注均为主要角色");
+
+  assert.deepEqual(explicit.operations.map(({ title, note: noteText }) => ({ title, note: noteText })), [
+    { title: "兰斯", note: "近卫骑士" },
+    { title: "希露", note: "女仆" },
+  ]);
+  assert.deepEqual(shared.operations.map(({ title, note: noteText }) => ({ title, note: noteText })), [
+    { title: "兰斯", note: "主要角色" },
+    { title: "希露", note: "主要角色" },
+  ]);
+  assert.equal(createLocalOperationPlan(diagram(), "创建兰斯和希露，备注为主要角色"), null);
+  assert.equal(createLocalOperationPlan(diagram(), "创建兰斯，他与希露是朋友"), null);
+  assert.equal(createLocalOperationPlan(diagram(), "创建兰斯，他是希露的朋友"), null);
+});
+
+test("cleans malformed model node fields before applying them", () => {
+  assert.deepEqual(
+    normalizeGeneratedNodeContent("创建一个名为兰斯的节点，备注为近卫骑士", ""),
+    { title: "兰斯", note: "近卫骑士" },
+  );
+  assert.deepEqual(normalizeGeneratedNodeContent("角色管理", ""), { title: "角色管理", note: "" });
+  assert.deepEqual(normalizeGeneratedNodeContent("创建者", ""), { title: "创建者", note: "" });
+  assert.deepEqual(normalizeOperationPlan({
+    operations: [{
+      type: "add_node",
+      clientId: "lance",
+      title: "名为兰斯的节点",
+      note: "备注：近卫骑士",
+    }],
+  }, diagram()).operations, [{
+    type: "add_node",
+    nodeId: "lance",
+    title: "兰斯",
+    note: "近卫骑士",
+  }]);
 });
 
 test("connects existing nodes by stable id without mentioning unrelated nodes", () => {
@@ -225,6 +295,17 @@ test("targets note, rename, and disconnect operations by exact id", () => {
   assert.deepEqual(
     createLocalOperationPlan(currentDiagram, "将兰斯的备注改为骑士").operations,
     [{ type: "update_node", nodeId: "node-lance", note: "骑士" }],
+  );
+  assert.deepEqual(
+    createLocalOperationPlan(
+      currentDiagram,
+      "将兰斯的备注改为近卫骑士负责协调跨区域事务并记录重要结论",
+    ).operations,
+    [{
+      type: "update_node",
+      nodeId: "node-lance",
+      note: "近卫骑士负责协调跨区域事务并记录重要结论",
+    }],
   );
   assert.deepEqual(
     createLocalOperationPlan(currentDiagram, "将兰斯重命名为莱因哈鲁特").operations,
@@ -415,5 +496,8 @@ test("model prompt requests incremental operations rather than a complete map", 
   assert.match(prompt, /不要返回完整导图/);
   assert.match(prompt, /稳定 id/);
   assert.match(prompt, /没有被描述涉及.*不得出现在 operations/);
+  assert.match(prompt, /节点字段必须按语义严格划分/);
+  assert.match(prompt, /关系必须使用 connect/);
+  assert.match(prompt, /客户端会依据现有拓扑/);
   assert.equal(prompt.includes('"children"'), false);
 });

@@ -72,6 +72,10 @@ export function createLocalOperationPlan(diagramInput, description) {
     return null;
   }
 
+  if (hasMixedAddRelationIntent(text)) {
+    return null;
+  }
+
   const rawOperations = [];
   const aliasesByTitle = new Map();
   let aliasIndex = 0;
@@ -139,7 +143,8 @@ export function createLocalOperationPlan(diagramInput, description) {
   };
 
   const createNodeRef = (title, nearNodeId = "", note = "") => {
-    const normalizedTitle = compactEntityTitle(title);
+    const content = normalizeGeneratedNodeContent(title, note);
+    const normalizedTitle = content.title;
 
     if (!normalizedTitle || hasUnsafeEmbeddedIntent(normalizedTitle)) {
       hasAmbiguousNodeReference = true;
@@ -154,7 +159,7 @@ export function createLocalOperationPlan(diagramInput, description) {
       type: "add_node",
       clientId,
       title: normalizedTitle,
-      note: compactNote(note),
+      note: content.note,
       nearNodeId,
     });
     return clientId;
@@ -211,6 +216,17 @@ export function createLocalOperationPlan(diagramInput, description) {
   }
 
   for (const clause of clauses) {
+    if (/(添加|新增|创建|加入|生成)/.test(clause) && parseAddNodeDescriptions(clause).length) {
+      continue;
+    }
+
+    if (
+      additions.length
+      && /^(?:他|她|它|该节点|这个节点)(?:的)?(?:备注|说明|注释|描述|简介|身份|职业|定位|类型|职责|作用|内容)/.test(clause)
+    ) {
+      continue;
+    }
+
     const rename = parseRenameDescription(clause);
 
     if (rename) {
@@ -314,6 +330,8 @@ export function buildMindMapOperationMessages(diagramInput, description) {
       note: node.note,
       x: node.x,
       y: node.y,
+      width: node.width,
+      height: node.height,
     })),
     edges: diagram.edges.map((edge) => ({
       id: edge.id,
@@ -331,7 +349,7 @@ export function buildMindMapOperationMessages(diagramInput, description) {
     "现有节点和连线必须通过给定的稳定 id 引用；禁止根据标题猜造不存在的 id。",
     "没有被描述涉及的节点、连线、标题、备注、位置和样式不得出现在 operations 中。",
     "允许的操作：",
-    "1. add_node: {type, clientId, title, note?, nearNodeId?}。clientId 是本次计划内唯一临时引用，先添加再引用。",
+    "1. add_node: {type, clientId, title, note?, nearNodeId?}。clientId 是本次计划内唯一临时引用，先添加再引用；nearNodeId 只填写与新节点直接相关的现有节点。",
     "2. update_node: {type, nodeId, title?, note?}。只提供确实要修改的字段。",
     "3. remove_node: {type, nodeId}。只有用户明确要求删除节点时使用。",
     "4. connect: {type, sourceId, targetId, label, arrow, line}。sourceId/targetId 可引用现有 id 或先前 add_node 的 clientId。",
@@ -343,7 +361,12 @@ export function buildMindMapOperationMessages(diagramInput, description) {
     "虚线、弱关系、可选关系使用 dashed；点线使用 dotted；其余使用 solid。",
     "独立节点只使用 add_node，不要为了形成树而强行 connect。",
     "连接两个已存在节点时使用它们的真实 id，不要复制节点。",
-    "标题简短，备注只保留有帮助的信息。若描述有歧义，返回空 operations，并在 summary 中说明需要用户澄清。",
+    "节点字段必须按语义严格划分：title 只能是简短名称或主题，不得包含“名为/名字是/节点/备注/说明”等命令词，也不得是完整句子。",
+    "note 只放身份、职责、补充说明等描述，不重复 title；节点之间的关系必须使用 connect，绝不能塞进 note。",
+    "从描述提炼新节点时，核心实体或概念作为 title，身份、职责、属性和限制作为 note；参考相邻节点的命名粒度与备注风格，但不得编造用户未提及的事实。",
+    "例：‘创建一个名为兰斯的节点，备注为近卫骑士’应生成 title:‘兰斯’、note:‘近卫骑士’。",
+    "例：‘菲利斯与兰斯是契约关系’应生成或引用两个节点，并 connect，label:‘契约’，不能把整句作为节点标题或备注。",
+    "不要输出 x、y 或尺寸；客户端会依据现有拓扑、节点位置和连线标签自动布局。若描述有歧义，返回空 operations，并在 summary 中说明需要用户澄清。",
     "输出格式：{\"summary\":\"简短结果\",\"operations\":[...]}。",
   ].join("\n");
   const userPrompt = [
@@ -389,9 +412,10 @@ export function normalizeOperationPlan(input, diagramInput) {
     const type = normalizeOperationType(rawOperation?.type);
 
     if (type === "add_node") {
-      const title = normalizeText(rawOperation.title, 80);
+      const content = normalizeGeneratedNodeContent(rawOperation.title, rawOperation.note);
+      const title = content.title;
 
-      if (!title) {
+      if (!title || hasUnsafeEmbeddedIntent(title)) {
         throw new Error("add_node 缺少有效标题。");
       }
 
@@ -411,7 +435,7 @@ export function normalizeOperationPlan(input, diagramInput) {
         type,
         nodeId,
         title,
-        note: normalizeText(rawOperation.note, 240),
+        note: content.note,
       };
 
       if (rawOperation.nearNodeId) {
@@ -569,10 +593,22 @@ function splitDescriptionClauses(description) {
     .filter(Boolean);
 }
 
+function hasMixedAddRelationIntent(description) {
+  const text = String(description || "");
+  return /(添加|新增|创建|加入|生成)/.test(text) && (
+    /[，,。；;](?:他|她|它|该节点|这个节点).*(?:和|与|跟).*(?:是|为|关系)/.test(text)
+    || /[，,。；;](?:他|她|它|该节点|这个节点).*(?:是|为).+的(?:朋友|同伴|伙伴|主人|奴隶|上级|下属|成员)/.test(text)
+  );
+}
+
 function parseAddNodeDescriptions(description) {
   const normalized = normalizeCommand(description);
 
   if (!/(添加|新增|创建|加入|生成)/.test(normalized)) {
+    return [];
+  }
+
+  if (hasMixedAddRelationIntent(normalized)) {
     return [];
   }
 
@@ -583,21 +619,33 @@ function parseAddNodeDescriptions(description) {
   const parentTitle = extractAddParentTitle(command);
   const titles = extractAddChildTitles(command);
 
-  return titles.map((title) => ({ parentTitle, title, note: inlineNote.note }));
+  if (titles.length > 1 && inlineNote.note && !inlineNote.shared) {
+    return [];
+  }
+
+  return titles.flatMap((title) => {
+    const content = normalizeGeneratedNodeContent(title, inlineNote.note);
+    return content.title ? [{ parentTitle, ...content }] : [];
+  });
 }
 
 function extractInlineNote(description) {
-  const match = description.match(/(?:^|[，,。；;])(?:备注|说明|注释)(?:写明|改为|设置为|为|是|:|：)(.+)$/);
+  const match = description.match(/(?:[，,。；;]\s*)?(?:(?:他|她|它|该节点|这个节点)(?:的)?)?(?:备注|说明|注释|描述|简介|身份|职业|定位|类型|职责|作用|内容)(?:均|都|统一|共同)?(?:写明|写为|改为|设置为|填写为|是|为|:|：)(.+)$/);
 
-  if (!match) {
-    return { index: -1, note: "" };
+  if (match) {
+    return {
+      index: match.index,
+      note: compactNote(match[1]).replace(/的(?:子?节点|主题|分支)$/g, ""),
+      shared: /(?:备注|说明|注释|描述|简介|身份|职业|定位|类型|职责|作用|内容)(?:均|都|统一|共同)/.test(match[0]),
+    };
   }
 
-  const prefixLength = /^[，,。；;]/.test(match[0]) ? 1 : 0;
-  return {
-    index: match.index + prefixLength,
-    note: compactNote(match[1]),
-  };
+  const inferred = description.match(/[，,。；;]\s*(?:(?:他|她|它|该节点|这个节点)(?:的)?)?(?:是一名|是一个|是|为|担任)(.+)$/);
+  return inferred ? {
+    index: inferred.index,
+    note: compactNote(inferred[1]),
+    shared: false,
+  } : { index: -1, note: "", shared: false };
 }
 
 function extractAddParentTitle(description) {
@@ -649,7 +697,10 @@ function extractAddChildTitles(description) {
 
   const cleaned = String(natural[1] || "")
     .replace(/(?:一个|一条|1个|两个|2个|多个|若干|一些|几个)?(?:子?节点|分支|主题)$/g, "")
-    .replace(/^(?:两个|2个|多个|若干|一些|几个|一组)?(?:子?节点|分支|主题)[，,：:]?/g, "")
+    .replace(/^(?:一个|一条|1个|两个|2个|多个|若干|一些|几个|一组)?(?:子?节点|分支|主题)[，,：:]?/g, "")
+    .replace(/^(?:一个|一条|1个)?(?:角色|人物|实体|事项|条目)[，,：:\s]*/g, "")
+    .replace(/^(?:一个|一条|1个)?(?:名称|名字|标题|节点名)(?:叫做|叫作|叫|是|为|:|：)/g, "")
+    .replace(/^(?:一个|一条|1个)?(?:名为|名叫|叫做|叫作|叫)/g, "")
     .replace(/^分别(?:为|叫|是)/g, "")
     .trim();
 
@@ -658,7 +709,7 @@ function extractAddChildTitles(description) {
 
 function extractNamedTitles(description) {
   const titles = [];
-  const pattern = /(?:名叫|叫做|叫作|叫|名称为|名字为|命名为)[“"']?([^“”"',，。；;、和与]+)[”"']?/g;
+  const pattern = /(?:名为|名叫|叫做|叫作|叫|名称(?:叫做|叫作|叫|是|为)|名字(?:叫做|叫作|叫|是|为)|标题(?:是|为)|节点名(?:是|为)|命名为)[“"']?([^“”"',，。；;、和与]+?)[”"']?(?=(?:的)?(?:子?节点|分支|主题)|(?:备注|说明|注释|描述|简介|身份|职责|作用|内容)|[，,。；;、和与]|$)/g;
   let match = pattern.exec(description);
 
   while (match) {
@@ -677,7 +728,14 @@ function extractNamedTitles(description) {
 function parseRelationDescription(description) {
   const normalized = normalizeCommand(description);
 
-  if (looksLikeTitleNamingText(normalized) || /(删除|移除|断开).*(?:连线|连接|关系)/.test(normalized)) {
+  if (
+    /(添加|新增|创建|加入|生成)/.test(normalized)
+    || looksLikeTitleNamingText(normalized)
+    || parseRenameDescription(normalized)
+    || parseExplicitNoteDescription(normalized)
+    || parseDiagramTitleDescription(normalized)
+    || /(删除|移除|断开).*(?:连线|连接|关系)/.test(normalized)
+  ) {
     return null;
   }
 
@@ -749,7 +807,7 @@ function parseRenameDescription(description) {
 }
 
 function parseExplicitNoteDescription(description) {
-  const match = normalizeCommand(description).match(/^(?:将|把)?[“"']?(.+?)[”"']?(?:节点)?(?:的)?(?:备注|说明|注释)(?:改为|设置为|写为|是|为|:|：)(.*)$/);
+  const match = normalizeCommand(description).match(/^(?:将|把)?[“"']?(.+?)[”"']?(?:节点)?(?:的)?(?:备注|说明|注释|描述|简介|身份|职业|定位|类型|职责)(?:改为|设置为|写为|是|为|:|：)(.*)$/);
   return match ? {
     title: compactEntityTitle(match[1]),
     note: compactNote(match[2]),
@@ -837,6 +895,58 @@ function compactEntityTitle(value) {
     .slice(0, 80);
 }
 
+export function normalizeGeneratedNodeContent(titleInput, noteInput = "") {
+  let rawTitle = normalizeText(titleInput, 160);
+  let note = compactNote(noteInput);
+  const embeddedNote = extractInlineNote(rawTitle);
+
+  if (embeddedNote.index > 0) {
+    rawTitle = rawTitle.slice(0, embeddedNote.index).replace(/[，,。；;：:\s]+$/g, "");
+    note ||= embeddedNote.note;
+  }
+
+  rawTitle = rawTitle.replace(/(?:的)?(?:子?节点|主题|分支)$/g, "").trim();
+  const parenthetical = !note
+    ? rawTitle.match(/^(.{1,80})[（(]([^（）()]{1,240})[）)]$/)
+    : null;
+
+  if (parenthetical) {
+    rawTitle = parenthetical[1];
+    note = compactNote(parenthetical[2]);
+  }
+
+  const title = compactGeneratedTitle(rawTitle);
+
+  for (const separator of ["是", "为", ":", "："]) {
+    const prefix = `${title}${separator}`;
+
+    if (title && note.startsWith(prefix)) {
+      note = compactNote(note.slice(prefix.length));
+      break;
+    }
+  }
+
+  if (titleKey(note) === titleKey(title) || /^(?:无|无备注|暂无|暂无备注|没有)$/.test(note)) {
+    note = "";
+  }
+
+  return {
+    title: normalizeText(title, 80),
+    note: normalizeText(note, 240),
+  };
+}
+
+function compactGeneratedTitle(value) {
+  return compactEntityTitle(value)
+    .replace(/^(?:请)?(?:添加|新增|创建|加入)(?:(?:一个|一条|1个)(?:子?节点|分支|主题)?|(?:子?节点|分支|主题)[，,：:\s]*)/g, "")
+    .replace(/^(?:请)?生成(?:一个|一条|1个|两个|2个|多个|若干|一些|几个)(?:子?节点|分支|主题)?/g, "")
+    .replace(/^(?:一个|一条|1个)?(?:名称|名字|标题|节点名)(?:叫做|叫作|叫|是|为|:|：)/g, "")
+    .replace(/^(?:一个|一条|1个)?(?:名为|名叫|叫做|叫作|叫)/g, "")
+    .replace(/^(?:一个|一条|1个)?(?:角色|人物|实体|事项|条目)[，,：:\s]+/g, "")
+    .replace(/[，,。；;：:\s]+$/g, "")
+    .trim();
+}
+
 function compactRelationEndpoint(value) {
   return compactEntityTitle(value)
     .replace(/(?:使用|采用|通过)(?:虚线|点线|点状线|点划线|普通线|普通连线|实线|双向线|单向线)?$/g, "")
@@ -857,7 +967,10 @@ function compactRelationLabel(value) {
 }
 
 function compactNote(value) {
-  return normalizeText(value, 240).replace(/^[“"']+|[”"']+$/g, "");
+  return normalizeText(value, 240)
+    .replace(/^(?:备注|说明|注释|描述|简介|身份|职业|定位|类型|职责|作用|内容)(?:写明|写为|改为|设置为|填写为|是|为|:|：)/g, "")
+    .replace(/^[“"']+|[”"']+$/g, "")
+    .trim();
 }
 
 function uniqueTitles(titles) {

@@ -139,6 +139,13 @@
 
     <input id="importFileInput" type="file" accept="application/json,.json,.drawio,.xml,text/xml,application/xml" hidden />
 
+    <script type="importmap">
+      {
+        "imports": {
+          "@dagrejs/dagre": "/vendor/dagre.esm.js"
+        }
+      }
+    </script>
     <script src="./app.js" type="module"></script>
   </body>
 </html>

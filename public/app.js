@@ -1,3 +1,8 @@
+import {
+  planIncrementalNodeLayout,
+  resizeRectAroundCenter,
+} from "./graph-layout.js";
+
 const STORAGE_KEYS = {
   drawioXml: "atri.toolbox.drawio.xml",
   drawioTitle: "atri.toolbox.drawio.title",
@@ -20,6 +25,7 @@ const DRAWIO_URL = [
   "&saveAndExit=0",
   "&modified=0",
 ].join("");
+const desktopApi = getDesktopApi();
 
 const LAYOUT = {
   topX: 80,
@@ -38,7 +44,7 @@ const LAYOUT = {
   relationRowGap: 120,
   minCanvasPadding: 40,
   overlapGap: 34,
-  labelOffsetX: -0.18,
+  labelOffsetX: 0,
   labelOffsetY: -18,
 };
 
@@ -72,6 +78,7 @@ const dom = {
 };
 
 const initialDiagram = loadInitialDiagram();
+const initialModelSettings = loadBrowserSettings();
 const state = {
   diagramXml: initialDiagram.xml,
   diagramTitle: initialDiagram.title,
@@ -87,6 +94,13 @@ const state = {
   isPromptCollapsed: loadPromptCollapsed(),
   pageScrollPosition: { x: 0, y: 0 },
   scrollRestoreTimer: 0,
+  lastUndoShortcutAt: 0,
+  desktopDiagramReady: !desktopApi,
+  diagramRestorePromise: Promise.resolve(),
+  modelSettings: initialModelSettings,
+  modelSettingsRevision: 0,
+  settingsReady: Promise.resolve(),
+  lastFileSaveError: "",
 };
 
 loadSettingsIntoForm();
@@ -96,6 +110,8 @@ bindEvents();
 saveDiagramState();
 loadDrawioEditor();
 setStatus("正在载入 draw.io 编辑器...");
+state.settingsReady = hydrateDesktopModelSettings();
+state.diagramRestorePromise = restoreDesktopDiagram();
 
 function bindEvents() {
   dom.settingsButton.addEventListener("click", () => {
@@ -116,9 +132,7 @@ function bindEvents() {
   dom.descriptionInput.addEventListener("keydown", handleDescriptionKeydown);
   dom.promptToggleButton.addEventListener("click", togglePromptPanel);
 
-  dom.newMapButton.addEventListener("click", () => {
-    replaceMindMap(createDefaultMap(), "已新建 draw.io 思维导图。", "当前导图");
-  });
+  dom.newMapButton.addEventListener("click", () => void createNewMindMap());
 
   dom.mapTitleInput.addEventListener("focus", () => {
     state.mapTitleBeforeEdit = state.diagramTitle;
@@ -127,7 +141,7 @@ function bindEvents() {
   dom.mapTitleInput.addEventListener("keydown", handleMapTitleKeydown);
   dom.mapTitleInput.addEventListener("blur", commitDiagramTitleEdit);
   dom.exportButton.addEventListener("click", exportDiagram);
-  dom.importButton.addEventListener("click", () => dom.importFileInput.click());
+  dom.importButton.addEventListener("click", () => void chooseDiagramToImport());
   dom.importFileInput.addEventListener("change", importDiagram);
 
   dom.zoomInButton.addEventListener("click", () => invokeDrawioAction("zoomIn"));
@@ -136,6 +150,7 @@ function bindEvents() {
 
   window.addEventListener("message", handleDrawioMessage);
   window.addEventListener("keydown", handleGlobalKeydown, true);
+  window.__atriHandleUndoShortcut = handleExternalUndoShortcut;
 }
 
 function togglePromptPanel() {
@@ -188,16 +203,62 @@ function handleDescriptionKeydown(event) {
 }
 
 function handleGlobalKeydown(event) {
-  if (!isUndoShortcut(event) || state.isGenerating || !state.aiUndoStack.length) {
+  if (!isUndoShortcut(event) || event.repeat || shouldUseNativeTextUndo(event.target)) {
     return;
   }
 
-  if (event.target === dom.descriptionInput && dom.descriptionInput.value) {
-    return;
+  if (handleApplicationUndo()) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+}
+
+function handleExternalUndoShortcut() {
+  if (shouldUseNativeTextUndo(document.activeElement)) {
+    return false;
   }
 
-  event.preventDefault();
-  undoLastDescriptionChange();
+  return handleApplicationUndo();
+}
+
+function handleApplicationUndo() {
+  if (state.isGenerating) {
+    return true;
+  }
+
+  const now = Date.now();
+
+  if (now - state.lastUndoShortcutAt < 120) {
+    return true;
+  }
+
+  state.lastUndoShortcutAt = now;
+
+  if (state.aiUndoStack.length) {
+    undoLastDescriptionChange();
+    return true;
+  }
+
+  if (state.drawioReady) {
+    invokeDrawioAction("undo");
+    return true;
+  }
+
+  return false;
+}
+
+function shouldUseNativeTextUndo(target) {
+  if (!target) {
+    return false;
+  }
+
+  if (target === dom.descriptionInput) {
+    return Boolean(dom.descriptionInput.value);
+  }
+
+  return target instanceof HTMLInputElement
+    || target instanceof HTMLTextAreaElement
+    || Boolean(target.isContentEditable);
 }
 
 function isUndoShortcut(event) {
@@ -237,7 +298,10 @@ function handleDrawioMessage(event) {
   }
 
   if (message.event === "autosave") {
-    updateDiagramXmlFromEditor(message.xml);
+    if (!state.pendingLoad) {
+      updateDiagramXmlFromEditor(message.xml);
+    }
+
     return;
   }
 
@@ -273,6 +337,8 @@ function sendDrawioLoad(rememberScroll = true) {
   if (rememberScroll) {
     rememberPageScrollPosition();
   }
+
+  state.pendingLoad = true;
 
   postDrawio({
     action: "load",
@@ -353,6 +419,7 @@ function commitPendingEditorXml() {
 
   state.diagramXml = state.pendingEditorXml;
   state.pendingEditorXml = "";
+  syncDiagramTitleMetadata();
   saveDiagramState();
 }
 
@@ -466,6 +533,8 @@ async function generateMindMap() {
   if (state.isGenerating) {
     return;
   }
+
+  await state.settingsReady;
 
   const description = dom.descriptionInput.value.trim();
 
@@ -636,14 +705,27 @@ function updateDiagramTitle() {
 
 function commitDiagramTitleEdit() {
   state.diagramTitle = dom.mapTitleInput.value.trim() || DEFAULT_MAP_TITLE;
+  syncDiagramTitleMetadata();
   syncMapTitleInput();
   saveDiagramState();
 }
 
 function cancelDiagramTitleEdit() {
   state.diagramTitle = state.mapTitleBeforeEdit || state.diagramTitle || DEFAULT_MAP_TITLE;
+  syncDiagramTitleMetadata();
   syncMapTitleInput();
   saveDiagramState();
+}
+
+function syncDiagramTitleMetadata() {
+  const documentXml = parseXml(state.diagramXml);
+
+  if (!documentXml) {
+    return;
+  }
+
+  updateDiagramMetadata(documentXml, state.diagramTitle);
+  state.diagramXml = new XMLSerializer().serializeToString(documentXml);
 }
 
 function handleMapTitleKeydown(event) {
@@ -686,6 +768,42 @@ function exportDiagram() {
   setStatus("已导出 DRAWIO 文件。");
 }
 
+async function createNewMindMap() {
+  try {
+    await state.diagramRestorePromise;
+
+    if (desktopApi) {
+      await desktopApi.clearActiveDiagram();
+    }
+
+    replaceMindMap(createDefaultMap(), "已新建 draw.io 思维导图。", "当前导图");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "无法新建思维导图。", true);
+  }
+}
+
+async function chooseDiagramToImport() {
+  if (!desktopApi) {
+    dom.importFileInput.click();
+    return;
+  }
+
+  try {
+    await state.diagramRestorePromise;
+    const result = await desktopApi.openDiagram();
+
+    if (!result || result.canceled) {
+      return;
+    }
+
+    applyImportedDiagram(result.content, result.fileName, {
+      writable: result.writable,
+    });
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "导入失败，请检查文件。", true);
+  }
+}
+
 async function importDiagram(event) {
   const file = event.target.files?.[0];
 
@@ -695,25 +813,59 @@ async function importDiagram(event) {
 
   try {
     const text = await file.text();
-
-    if (looksLikeDrawioXml(text)) {
-      state.diagramXml = normalizeDrawioXml(text, state.diagramTitle);
-      state.diagramTitle = stripExtension(file.name) || extractTitleFromDrawioXml(state.diagramXml) || DEFAULT_MAP_TITLE;
-      state.aiUndoStack = [];
-      syncMapTitleInput();
-      saveDiagramState();
-      state.pendingStatus = "已导入 DRAWIO 文件。";
-      sendDrawioLoad();
-      setStatus("已导入 DRAWIO 文件。");
-      return;
-    }
-
-    const payload = JSON.parse(text);
-    replaceMindMap(payload, "已导入 JSON 并转换为 draw.io 图。", "导入完成");
+    applyImportedDiagram(text, file.name);
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "导入失败，请检查文件。", true);
   } finally {
     dom.importFileInput.value = "";
+  }
+}
+
+function applyImportedDiagram(text, fileName, options = {}) {
+  if (looksLikeDrawioXml(text)) {
+    state.diagramXml = normalizeDrawioXml(text, state.diagramTitle);
+    state.diagramTitle = stripExtension(fileName)
+      || extractTitleFromDrawioXml(state.diagramXml)
+      || DEFAULT_MAP_TITLE;
+    state.aiUndoStack = [];
+    state.pendingEditorXml = "";
+    syncMapTitleInput();
+    saveDiagramState({ writeThrough: options.writeThrough !== false });
+
+    const message = options.restored
+      ? `已恢复 ${fileName}，后续改动将直接写回该文件。`
+      : options.writable
+        ? `已导入 ${fileName}，后续改动将直接写回该文件。`
+        : "已导入 DRAWIO 文件。";
+    state.pendingStatus = message;
+    sendDrawioLoad();
+    setStatus(message);
+    return;
+  }
+
+  const payload = JSON.parse(text);
+  replaceMindMap(payload, "已导入 JSON 并转换为 draw.io 图。", "导入完成");
+}
+
+async function restoreDesktopDiagram() {
+  if (!desktopApi) {
+    return;
+  }
+
+  try {
+    const restored = await desktopApi.restoreActiveDiagram();
+
+    if (restored?.content) {
+      applyImportedDiagram(restored.content, restored.fileName, {
+        restored: true,
+        writable: true,
+        writeThrough: false,
+      });
+    }
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "无法恢复上次导入的思维导图。", true);
+  } finally {
+    state.desktopDiagramReady = true;
   }
 }
 
@@ -746,9 +898,34 @@ function loadInitialDiagram() {
   }
 }
 
-function saveDiagramState() {
+function saveDiagramState(options = {}) {
   localStorage.setItem(STORAGE_KEYS.drawioXml, state.diagramXml);
   localStorage.setItem(STORAGE_KEYS.drawioTitle, state.diagramTitle || DEFAULT_MAP_TITLE);
+
+  if (options.writeThrough !== false) {
+    persistActiveDiagram();
+  }
+}
+
+function persistActiveDiagram() {
+  if (!desktopApi || !state.desktopDiagramReady) {
+    return;
+  }
+
+  desktopApi.saveActiveDiagram({ xml: state.diagramXml })
+    .then((result) => {
+      if (result?.saved) {
+        state.lastFileSaveError = "";
+      }
+    })
+    .catch((error) => {
+      const message = error instanceof Error ? error.message : "无法写回导入的思维导图。";
+
+      if (message !== state.lastFileSaveError) {
+        state.lastFileSaveError = message;
+        setStatus(`原文件保存失败：${message}`, true);
+      }
+    });
 }
 
 function syncMapTitleInput() {
@@ -805,6 +982,11 @@ function applyMindMapOperationsToDrawioXml(xml, operations, diagramTitle = DEFAU
   const usedIds = collectUsedCellIds(graphRoot);
   const verticesById = collectVertexCellsById(graphRoot);
   const edgesById = collectEdgeCellsById(graphRoot);
+  const layoutState = {
+    movableNodeIds: new Set(),
+    hints: [],
+    initialConnectionCounts: countConnectionsByNode(edgesById.values()),
+  };
   let nextTitle = diagramTitle || DEFAULT_MAP_TITLE;
   let appliedCount = 0;
 
@@ -822,6 +1004,12 @@ function applyMindMapOperationsToDrawioXml(xml, operations, diagramTitle = DEFAU
         usedIds,
       );
       verticesById.set(operation.nodeId, cell);
+      layoutState.movableNodeIds.add(operation.nodeId);
+
+      if (operation.nearNodeId) {
+        layoutState.hints.push({ nodeId: operation.nodeId, anchorId: operation.nearNodeId });
+      }
+
       appliedCount += 1;
       continue;
     }
@@ -865,11 +1053,7 @@ function applyMindMapOperationsToDrawioXml(xml, operations, diagramTitle = DEFAU
       );
 
       if (!edge) {
-        positionNodeForConnection(graphRoot, source, target, {
-          relation: operation.label,
-          relationArrow: arrow,
-          relationLine: operation.line,
-        });
+        markConnectionLayoutNodes(layoutState, operation.sourceId, operation.targetId);
         edge = createManagedEdgeCell(
           documentXml,
           graphRoot,
@@ -924,6 +1108,7 @@ function applyMindMapOperationsToDrawioXml(xml, operations, diagramTitle = DEFAU
     throw new Error(`不支持的思维导图操作：${operation.type || "(empty)"}`);
   }
 
+  applyIncrementalNodeLayout(graphRoot, layoutState);
   updateDiagramMetadata(documentXml, nextTitle);
 
   return {
@@ -1025,10 +1210,7 @@ function createOperationVertexCell(documentXml, graphRoot, operation, verticesBy
     title: operation.title,
     note: operation.note || "",
   };
-  const nearCell = operation.nearNodeId ? verticesById.get(operation.nearNodeId) : null;
-  const position = nearCell
-    ? getRelatedNodePosition(graphRoot, nearCell, node, null)
-    : getIndependentNodePosition(graphRoot);
+  const position = getIndependentNodePosition(graphRoot);
   const size = measureNodeSize(node);
 
   cell.setAttribute("id", id);
@@ -1087,132 +1269,97 @@ function findEquivalentEdgeCell(edges, sourceId, targetId, arrow) {
   return null;
 }
 
-function positionNodeForConnection(graphRoot, source, target, node) {
-  const sourceConnections = getConnectedVertexCells(graphRoot, source).length;
-  const targetConnections = getConnectedVertexCells(graphRoot, target).length;
-  let anchor = source;
-  let moving = target;
-  let preferredSide = 0;
+function countConnectionsByNode(edges) {
+  const counts = new Map();
 
-  if (targetConnections > 0 && sourceConnections === 0) {
-    anchor = target;
-    moving = source;
-    preferredSide = normalizeRelationArrow(node?.relationArrow) === "none" ? 0 : -1;
-  } else if (targetConnections > 0) {
-    return;
-  }
+  for (const edge of edges) {
+    const sourceId = edge.getAttribute("source");
+    const targetId = edge.getAttribute("target");
 
-  const current = getCellGeometry(moving);
-  const next = getRelatedNodePosition(graphRoot, anchor, node, moving, preferredSide);
+    if (sourceId) {
+      counts.set(sourceId, (counts.get(sourceId) || 0) + 1);
+    }
 
-  if (!current || !next) {
-    return;
-  }
-
-  translateCell(moving, Math.round(next.x - current.x), Math.round(next.y - current.y));
-}
-function getRelatedNodePosition(graphRoot, parentCell, node, targetCell, preferredSide = 0) {
-  const parentGeometry = getCellGeometry(parentCell);
-
-  if (!parentGeometry) {
-    return null;
-  }
-
-  const side = preferredSide || chooseRelationSide(graphRoot, parentCell, node);
-  const targetGeometry = getCellGeometry(targetCell) || {
-    width: LAYOUT.nodeWidth,
-    height: measureNodeSize(node).height,
-  };
-  const x = Math.max(LAYOUT.minCanvasPadding, alignToLayoutGrid(parentGeometry.x + (side * LAYOUT.relationGapX)));
-  const y = chooseAvailableRelationY(graphRoot, x, parentGeometry.y, targetGeometry, targetCell);
-
-  return {
-    x,
-    y,
-  };
-}
-
-function chooseRelationSide(graphRoot, parentCell, node) {
-  const parentGeometry = getCellGeometry(parentCell);
-
-  if (!parentGeometry || normalizeRelationArrow(node?.relationArrow) !== "none") {
-    return 1;
-  }
-
-  if (parentGeometry.x < 260) {
-    return 1;
-  }
-
-  const parentCenter = parentGeometry.x + (parentGeometry.width / 2);
-  const connected = getConnectedVertexCells(graphRoot, parentCell);
-  const rightCount = connected.filter((cell) => {
-    const geometry = getCellGeometry(cell);
-    return geometry && geometry.x > parentCenter;
-  }).length;
-  const leftCount = connected.filter((cell) => {
-    const geometry = getCellGeometry(cell);
-    return geometry && geometry.x < parentCenter;
-  }).length;
-
-  return rightCount > leftCount ? -1 : 1;
-}
-
-function chooseAvailableRelationY(graphRoot, x, preferredY, targetGeometry, targetCell) {
-  const offsets = [0, LAYOUT.relationRowGap, -LAYOUT.relationRowGap, LAYOUT.relationRowGap * 2, -LAYOUT.relationRowGap * 2, LAYOUT.relationRowGap * 3, -LAYOUT.relationRowGap * 3, LAYOUT.relationRowGap * 4, -LAYOUT.relationRowGap * 4];
-  const vertices = getVertexCells(graphRoot).filter((cell) => cell !== targetCell);
-  const width = targetGeometry.width || LAYOUT.nodeWidth;
-  const height = targetGeometry.height || LAYOUT.nodeHeight;
-
-  for (const offset of offsets) {
-    const candidate = {
-      x,
-      y: Math.max(LAYOUT.minCanvasPadding, alignToLayoutGrid(preferredY + offset)),
-      width,
-      height,
-    };
-
-    if (!vertices.some((cell) => rectanglesOverlap(candidate, getCellGeometry(cell), LAYOUT.overlapGap))) {
-      return candidate.y;
+    if (targetId) {
+      counts.set(targetId, (counts.get(targetId) || 0) + 1);
     }
   }
 
-  return Math.max(LAYOUT.minCanvasPadding, alignToLayoutGrid(preferredY + ((offsets.length + 1) * LAYOUT.relationRowGap)));
+  return counts;
 }
 
-function getConnectedVertexCells(graphRoot, cell) {
-  const id = cell.getAttribute("id");
-  const byId = collectVertexCellsById(graphRoot);
-
-  return Array.from(graphRoot.querySelectorAll('mxCell[edge="1"]'))
-    .map((edge) => {
-      if (edge.getAttribute("source") === id) {
-        return byId.get(edge.getAttribute("target"));
-      }
-
-      if (edge.getAttribute("target") === id) {
-        return byId.get(edge.getAttribute("source"));
-      }
-
-      return null;
-    })
-    .filter(Boolean);
-}
-
-function translateCell(cell, dx, dy) {
-  const geometry = cell.querySelector("mxGeometry");
-
-  if (!geometry) {
+function markConnectionLayoutNodes(layoutState, sourceId, targetId) {
+  if (layoutState.movableNodeIds.has(sourceId) || layoutState.movableNodeIds.has(targetId)) {
     return;
   }
 
-  const current = getCellGeometry(cell);
+  const sourceConnections = layoutState.initialConnectionCounts.get(sourceId) || 0;
+  const targetConnections = layoutState.initialConnectionCounts.get(targetId) || 0;
 
-  if (!current) {
+  if (sourceConnections === 0 && targetConnections > 0) {
+    layoutState.movableNodeIds.add(sourceId);
+  } else if (targetConnections === 0 && sourceConnections > 0) {
+    layoutState.movableNodeIds.add(targetId);
+  } else if (sourceConnections === 0 && targetConnections === 0) {
+    layoutState.movableNodeIds.add(targetId);
+  }
+}
+
+function applyIncrementalNodeLayout(graphRoot, layoutState) {
+  if (!layoutState.movableNodeIds.size) {
     return;
   }
 
-  geometry.setAttribute("x", String(Math.round(current.x + dx)));
-  geometry.setAttribute("y", String(Math.round(current.y + dy)));
+  const vertices = getVertexCells(graphRoot);
+  const verticesById = collectVertexCellsById(graphRoot);
+  const nodes = vertices.flatMap((cell) => {
+    const geometry = getCellGeometry(cell);
+    const id = cell.getAttribute("id");
+
+    if (!id || !geometry) {
+      return [];
+    }
+
+    return [{
+      id,
+      ...geometry,
+      obstacleOnly: id === "atri-root",
+    }];
+  });
+  const edges = Array.from(graphRoot.querySelectorAll('mxCell[edge="1"]')).map((edge) => {
+    const relation = extractEdgeRelationMeta(edge);
+    return {
+      id: edge.getAttribute("id"),
+      sourceId: edge.getAttribute("source"),
+      targetId: edge.getAttribute("target"),
+      label: relation.label,
+      arrow: relation.arrow,
+    };
+  });
+  const layout = planIncrementalNodeLayout({
+    nodes,
+    edges,
+    movableNodeIds: layoutState.movableNodeIds,
+    hints: layoutState.hints,
+  }, {
+    topX: LAYOUT.topX,
+    topY: LAYOUT.topY,
+    canvasPadding: LAYOUT.minCanvasPadding,
+    gridSize: 1,
+    nodeGap: LAYOUT.overlapGap,
+    rankGap: Math.max(100, LAYOUT.relationGapX - LAYOUT.nodeWidth),
+    rowGap: Math.max(60, LAYOUT.relationRowGap - LAYOUT.nodeHeight),
+    componentGap: LAYOUT.relationRowGap,
+  });
+
+  for (const position of layout.positions) {
+    const geometry = verticesById.get(position.id)?.querySelector("mxGeometry");
+
+    if (geometry) {
+      geometry.setAttribute("x", String(position.x));
+      geometry.setAttribute("y", String(position.y));
+    }
+  }
 }
 
 function getCellGeometry(cell) {
@@ -1247,17 +1394,6 @@ function collectVertexCellsById(graphRoot) {
   return new Map(getVertexCells(graphRoot)
     .map((cell) => [cell.getAttribute("id"), cell])
     .filter(([id]) => Boolean(id)));
-}
-
-function rectanglesOverlap(first, second, gap = 0) {
-  if (!first || !second) {
-    return false;
-  }
-
-  return first.x < second.x + second.width + gap
-    && first.x + first.width + gap > second.x
-    && first.y < second.y + second.height + gap
-    && first.y + first.height + gap > second.y;
 }
 
 function measureNodeSize(node) {
@@ -1321,8 +1457,15 @@ function updateVertexCell(cell, node) {
 
   if (geometry && isManagedNodeCell(cell)) {
     const size = measureNodeSize(node);
-    geometry.setAttribute("width", String(size.width));
-    geometry.setAttribute("height", String(size.height));
+    const current = getCellGeometry(cell);
+
+    if (current) {
+      const resized = resizeRectAroundCenter(current, size);
+      geometry.setAttribute("x", String(resized.x));
+      geometry.setAttribute("y", String(resized.y));
+      geometry.setAttribute("width", String(resized.width));
+      geometry.setAttribute("height", String(resized.height));
+    }
   }
 }
 
@@ -1729,25 +1872,17 @@ function createDefaultMap() {
   };
 }
 
-function loadSettings() {
+function loadBrowserSettings() {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.settings);
-    const settings = raw ? JSON.parse(raw) : {};
-
-    return {
-      endpoint: String(settings.endpoint || ""),
-      model: String(settings.model || ""),
-      apiKey: String(settings.apiKey || ""),
-      temperature: Number.isFinite(Number(settings.temperature)) ? Number(settings.temperature) : 0.3,
-    };
+    return normalizeModelSettings(raw ? JSON.parse(raw) : {});
   } catch {
-    return {
-      endpoint: "",
-      model: "",
-      apiKey: "",
-      temperature: 0.3,
-    };
+    return normalizeModelSettings();
   }
+}
+
+function loadSettings() {
+  return { ...state.modelSettings };
 }
 
 function loadSettingsIntoForm() {
@@ -1759,14 +1894,98 @@ function loadSettingsIntoForm() {
 }
 
 function saveSettingsFromForm() {
-  const settings = {
+  const settings = normalizeModelSettings({
     endpoint: dom.endpointInput.value.trim(),
     model: dom.modelInput.value.trim(),
     apiKey: dom.apiKeyInput.value.trim(),
     temperature: clamp(Number(dom.temperatureInput.value), 0, 2),
-  };
+  });
 
-  localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(settings));
+  state.modelSettings = settings;
+  state.modelSettingsRevision += 1;
+  persistBrowserModelSettings(settings);
+
+  if (desktopApi) {
+    desktopApi.saveModelSettings(settings).catch((error) => {
+      const message = error instanceof Error ? error.message : "大模型 API 设置保存失败。";
+      setStatus(message, true);
+    });
+  }
+
+  return settings;
+}
+
+async function hydrateDesktopModelSettings() {
+  if (!desktopApi) {
+    return;
+  }
+
+  const revision = state.modelSettingsRevision;
+
+  try {
+    const stored = await desktopApi.loadModelSettings();
+
+    if (revision !== state.modelSettingsRevision) {
+      await desktopApi.saveModelSettings(state.modelSettings);
+      persistBrowserModelSettings(state.modelSettings);
+      return;
+    }
+
+    if (stored) {
+      state.modelSettings = normalizeModelSettings(stored);
+      persistBrowserModelSettings(state.modelSettings);
+      loadSettingsIntoForm();
+      return;
+    }
+
+    if (hasModelSettings(state.modelSettings)) {
+      await desktopApi.saveModelSettings(state.modelSettings);
+      persistBrowserModelSettings(state.modelSettings);
+    }
+  } catch (error) {
+    console.warn("Failed to restore desktop model settings:", error);
+  }
+}
+
+function persistBrowserModelSettings(settings) {
+  const browserSettings = desktopApi
+    ? { ...settings, apiKey: "" }
+    : settings;
+
+  try {
+    localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(browserSettings));
+  } catch {
+    // Keep the current session usable when browser storage is unavailable.
+  }
+}
+
+function normalizeModelSettings(input = {}) {
+  const temperature = Number(input.temperature);
+
+  return {
+    endpoint: String(input.endpoint || "").trim(),
+    model: String(input.model || "").trim(),
+    apiKey: String(input.apiKey || "").trim(),
+    temperature: Number.isFinite(temperature) ? clamp(temperature, 0, 2) : 0.3,
+  };
+}
+
+function hasModelSettings(settings) {
+  return Boolean(settings.endpoint || settings.model || settings.apiKey);
+}
+
+function getDesktopApi() {
+  const api = window.atriDesktop;
+  const methods = [
+    "openDiagram",
+    "restoreActiveDiagram",
+    "saveActiveDiagram",
+    "clearActiveDiagram",
+    "loadModelSettings",
+    "saveModelSettings",
+  ];
+
+  return api && methods.every((method) => typeof api[method] === "function") ? api : null;
 }
 
 async function fetchWithTimeout(url, options, timeoutMs) {

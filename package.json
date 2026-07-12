@@ -23,7 +23,7 @@
     "start": "node desktop/launch.cjs",
     "dev": "node desktop/launch.cjs",
     "serve": "node server.js",
-    "check:syntax": "node --check mindmap-ai.js && node --check server.js && node --check desktop/main.cjs && node --check desktop/launch.cjs && node --check desktop/shutdown.cjs && node --check desktop/updater.cjs && node --check public/app.js",
+    "check:syntax": "node --check mindmap-ai.js && node --check server.js && node --check desktop/main.cjs && node --check desktop/launch.cjs && node --check desktop/atomic-file.cjs && node --check desktop/diagram-file.cjs && node --check desktop/history.cjs && node --check desktop/preload.cjs && node --check desktop/settings-store.cjs && node --check desktop/shutdown.cjs && node --check desktop/updater.cjs && node --check public/graph-layout.js && node --check public/app.js",
     "test": "node --test",
     "check": "npm run check:syntax && npm test",
     "package:linux": "electron-builder --linux",
@@ -33,6 +33,7 @@
     "node": ">=22.12"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^2.0.4",
     "electron-updater": "^6.8.9"
   },
   "devDependencies": {

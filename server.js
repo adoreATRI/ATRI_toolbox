@@ -14,6 +14,9 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const publicDir = path.join(__dirname, "public");
+const vendorFiles = new Map([
+  ["/vendor/dagre.esm.js", path.join(__dirname, "node_modules", "@dagrejs", "dagre", "dist", "dagre.esm.js")],
+]);
 const defaultPort = Number.parseInt(process.env.PORT || "5174", 10);
 
 const mimeTypes = {
@@ -275,9 +278,10 @@ async function readJson(request) {
 
 async function serveStatic(urlPath, response) {
   const requestPath = decodeURIComponent(urlPath === "/" ? "/index.html" : urlPath);
-  const resolved = path.resolve(publicDir, `.${requestPath}`);
+  const vendorFile = vendorFiles.get(requestPath);
+  const resolved = vendorFile || path.resolve(publicDir, `.${requestPath}`);
 
-  if (!isPathInside(resolved, publicDir)) {
+  if (!vendorFile && !isPathInside(resolved, publicDir)) {
     sendJson(response, 403, { error: "forbidden" });
     return;
   }
