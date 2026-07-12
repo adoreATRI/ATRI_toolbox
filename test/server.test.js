@@ -207,6 +207,62 @@ test("connects existing nodes by stable id without mentioning unrelated nodes", 
   assert.equal(JSON.stringify(plan).includes("node-unrelated"), false);
 });
 
+test("parses a progressive relationship chain without model assistance", () => {
+  const plan = createLocalOperationPlan(diagram(), "莉亚爱慕兰斯，加奈多服侍莉亚");
+  const styledPlan = createLocalOperationPlan(diagram(), "莉亚爱慕兰斯，使用虚线");
+  const additions = plan.operations.filter((operation) => operation.type === "add_node");
+  const connections = plan.operations.filter((operation) => operation.type === "connect");
+  const idsByTitle = new Map(additions.map((operation) => [operation.title, operation.nodeId]));
+
+  assert.deepEqual([...idsByTitle.keys()], ["莉亚", "兰斯", "加奈多"]);
+  assert.deepEqual(connections.map((operation) => ({
+    sourceId: operation.sourceId,
+    targetId: operation.targetId,
+    label: operation.label,
+    arrow: operation.arrow,
+  })), [
+    {
+      sourceId: idsByTitle.get("莉亚"),
+      targetId: idsByTitle.get("兰斯"),
+      label: "爱慕",
+      arrow: "forward",
+    },
+    {
+      sourceId: idsByTitle.get("加奈多"),
+      targetId: idsByTitle.get("莉亚"),
+      label: "服侍",
+      arrow: "forward",
+    },
+  ]);
+  assert.equal(styledPlan.operations.find((operation) => operation.type === "connect").line, "dashed");
+});
+
+test("allocates fresh local references across consecutive descriptions", () => {
+  const currentDiagram = diagram({
+    nodes: [
+      node("new-1", "莉亚"),
+      node("new-2", "兰斯"),
+    ],
+    edges: [{
+      id: "ai-edge",
+      sourceId: "new-1",
+      targetId: "new-2",
+      label: "爱慕",
+      arrow: "forward",
+      line: "solid",
+    }],
+    cellIds: ["new-1", "new-2", "ai-edge"],
+  });
+  const plan = createLocalOperationPlan(currentDiagram, "加奈多服侍莉亚");
+  const addition = plan.operations.find((operation) => operation.type === "add_node");
+  const connection = plan.operations.find((operation) => operation.type === "connect");
+
+  assert.equal(addition.nodeId, "new-3");
+  assert.equal(addition.title, "加奈多");
+  assert.equal(connection.sourceId, "new-3");
+  assert.equal(connection.targetId, "new-1");
+});
+
 test("adds a missing relation endpoint and connects it to the existing node", () => {
   const plan = createLocalOperationPlan(diagram({
     nodes: [node("node-lance", "兰斯")],

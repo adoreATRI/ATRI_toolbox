@@ -986,6 +986,7 @@ function applyMindMapOperationsToDrawioXml(xml, operations, diagramTitle = DEFAU
     movableNodeIds: new Set(),
     hints: [],
     initialConnectionCounts: countConnectionsByNode(edgesById.values()),
+    originNodeIds: new Set(verticesById.keys()),
   };
   let nextTitle = diagramTitle || DEFAULT_MAP_TITLE;
   let appliedCount = 0;
@@ -1300,7 +1301,7 @@ function markConnectionLayoutNodes(layoutState, sourceId, targetId) {
     layoutState.movableNodeIds.add(sourceId);
   } else if (targetConnections === 0 && sourceConnections > 0) {
     layoutState.movableNodeIds.add(targetId);
-  } else if (sourceConnections === 0 && targetConnections === 0) {
+  } else {
     layoutState.movableNodeIds.add(targetId);
   }
 }
@@ -1340,6 +1341,8 @@ function applyIncrementalNodeLayout(graphRoot, layoutState) {
     nodes,
     edges,
     movableNodeIds: layoutState.movableNodeIds,
+    originNodeIds: layoutState.originNodeIds,
+    reflowConnectedComponents: true,
     hints: layoutState.hints,
   }, {
     topX: LAYOUT.topX,

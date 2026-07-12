@@ -188,6 +188,35 @@ test("moves a generated node away from an unrelated connection line", () => {
   );
 });
 
+test("reflows only the related component into semantic progression", () => {
+  const nodes = [
+    node("lance", 340, 80),
+    node("lia", 40, 80),
+    node("kanade", 80, 700),
+    node("unrelated", 900, 500),
+  ];
+  const edges = [
+    edge("love", "lia", "lance", { label: "爱慕" }),
+    edge("serve", "kanade", "lia", { label: "服侍" }),
+  ];
+  const result = planIncrementalNodeLayout({
+    nodes,
+    edges,
+    movableNodeIds: ["kanade"],
+    originNodeIds: ["lance", "lia", "unrelated"],
+    reflowConnectedComponents: true,
+  });
+  const positions = new Map(result.positions.map((position) => [position.id, position]));
+
+  assert.deepEqual([...positions.keys()].sort(), ["kanade", "lance", "lia"]);
+  assert.ok(positions.get("kanade").x < positions.get("lia").x);
+  assert.ok(positions.get("lia").x < positions.get("lance").x);
+  assert.equal(positions.get("kanade").y, positions.get("lia").y);
+  assert.equal(positions.get("lia").y, positions.get("lance").y);
+  assert.ok(positions.get("kanade").x >= 40);
+  assert.equal(positions.has("unrelated"), false);
+});
+
 test("resizes a node around its center so alignment does not drift", () => {
   const original = { x: 700, y: 120, width: 180, height: 56 };
   const resized = resizeRectAroundCenter(original, { width: 280, height: 120 });

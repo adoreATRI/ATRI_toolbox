@@ -78,8 +78,24 @@ export function createLocalOperationPlan(diagramInput, description) {
 
   const rawOperations = [];
   const aliasesByTitle = new Map();
+  const reservedClientIds = new Set([
+    ...diagram.nodes.map((node) => node.id),
+    ...diagram.cellIds,
+  ]);
   let aliasIndex = 0;
   let hasAmbiguousNodeReference = false;
+
+  const allocateClientId = () => {
+    let clientId = "";
+
+    do {
+      aliasIndex += 1;
+      clientId = `new-${aliasIndex}`;
+    } while (reservedClientIds.has(clientId));
+
+    reservedClientIds.add(clientId);
+    return clientId;
+  };
 
   const findExistingNodes = (title) => {
     const key = titleKey(title);
@@ -129,8 +145,7 @@ export function createLocalOperationPlan(diagramInput, description) {
       return alias;
     }
 
-    aliasIndex += 1;
-    const clientId = `new-${aliasIndex}`;
+    const clientId = allocateClientId();
     aliasesByTitle.set(key, clientId);
     rawOperations.push({
       type: "add_node",
@@ -151,8 +166,7 @@ export function createLocalOperationPlan(diagramInput, description) {
       return "";
     }
 
-    aliasIndex += 1;
-    const clientId = `new-${aliasIndex}`;
+    const clientId = allocateClientId();
     const key = titleKey(normalizedTitle);
     aliasesByTitle.set(key, aliasesByTitle.has(key) ? "" : clientId);
     rawOperations.push({
@@ -358,6 +372,7 @@ export function buildMindMapOperationMessages(diagramInput, description) {
     "7. set_title: {type, title}。只有用户明确要求更改画布标题时使用。",
     "arrow 只能是 none、forward、backward、both；line 只能是 solid、dashed、dotted。",
     "契约、朋友、同伴、合作、关联等对等关系使用 arrow:none；指向、依赖、调用、控制、包含等有向关系使用 forward；互相或双向使用 both。",
+    "有向关系中 sourceId 必须是行为或依赖的发起者，targetId 是承受者；例如‘加奈多服侍莉亚’应为加奈多指向莉亚，以便客户端按关系链递进布局。",
     "虚线、弱关系、可选关系使用 dashed；点线使用 dotted；其余使用 solid。",
     "独立节点只使用 add_node，不要为了形成树而强行 connect。",
     "连接两个已存在节点时使用它们的真实 id，不要复制节点。",
@@ -727,6 +742,7 @@ function extractNamedTitles(description) {
 
 function parseRelationDescription(description) {
   const normalized = normalizeCommand(description);
+  const command = normalized.replace(/[，,](?:使用|采用)?(?:虚线|点线|点状线|点划线|普通线|普通连线|实线)(?:连接|连线)?$/g, "");
 
   if (
     /(添加|新增|创建|加入|生成)/.test(normalized)
@@ -739,31 +755,31 @@ function parseRelationDescription(description) {
     return null;
   }
 
-  const pairMatch = normalized.match(/^(.+?)(?:和|与)(.+?)(?:的)?关系(?:是|为|:|：)(.+)$/);
+  const pairMatch = command.match(/^(.+?)(?:和|与)(.+?)(?:的)?关系(?:是|为|:|：)(.+)$/);
 
   if (pairMatch) {
     return createRelation(pairMatch[1], pairMatch[2], pairMatch[3], normalized, "none");
   }
 
-  const mutualMatch = normalized.match(/^(.+?)(?:和|与|跟|同)(.+?)(?:是|为|存在|形成|建立)(.+?)(?:关系)?$/);
+  const mutualMatch = command.match(/^(.+?)(?:和|与|跟|同)(.+?)(?:是|为|存在|形成|建立)(.+?)(?:关系)?$/);
 
   if (mutualMatch) {
     return createRelation(mutualMatch[1], mutualMatch[2], mutualMatch[3], normalized, "none");
   }
 
-  const linkMatch = normalized.match(/^(?:将|把)?(.+?)(?:连接到|连到|关联到|指向)(.+?)(?:，|,)?(?:关系|标签|连线文字)?(?:是|为|:|：)(.+)$/);
+  const linkMatch = command.match(/^(?:将|把)?(.+?)(?:连接到|连到|关联到|指向)(.+?)(?:，|,)?(?:关系|标签|连线文字)?(?:是|为|:|：)(.+)$/);
 
   if (linkMatch) {
     return createRelation(linkMatch[1], linkMatch[2], linkMatch[3], normalized, "forward");
   }
 
-  const directMatch = normalized.match(/^(.+?)(指向|依赖|调用|控制|管理|负责|包含|拥有|继承|影响|流向)(.+)$/);
+  const directMatch = command.match(/^(.+?)(指向|依赖|调用|控制|管理|负责|包含|拥有|继承|影响|流向|爱慕|喜欢|服侍|侍奉|守护|追随|协助|帮助|支持|效忠|崇拜|敬仰)(.+)$/);
 
   if (directMatch) {
     return createRelation(directMatch[1], directMatch[3], directMatch[2], normalized, "forward");
   }
 
-  const roleMatch = normalized.match(/^(.+?)是(.+?)的(.+)$/);
+  const roleMatch = command.match(/^(.+?)是(.+?)的(.+)$/);
 
   if (!roleMatch) {
     return null;
@@ -781,6 +797,10 @@ function parseRelationDescription(description) {
 }
 
 function createRelation(sourceTitle, targetTitle, label, description, defaultArrow) {
+  if (/[，,。；;]/.test(String(sourceTitle || "")) || /[，,。；;]/.test(String(targetTitle || ""))) {
+    return null;
+  }
+
   const source = compactRelationEndpoint(sourceTitle);
   const target = compactRelationEndpoint(targetTitle);
   const compactLabel = compactRelationLabel(label);

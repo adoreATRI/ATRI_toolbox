@@ -16,15 +16,22 @@ export function planIncrementalNodeLayout(input = {}, optionOverrides = {}) {
   const options = { ...DEFAULT_OPTIONS, ...optionOverrides };
   const nodes = normalizeNodes(input.nodes);
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
-  const movableIds = new Set(
+  const edges = normalizeEdges(input.edges, nodesById);
+  let movableIds = new Set(
     Array.from(input.movableNodeIds || []).filter((id) => nodesById.has(id)),
   );
+
+  if (input.reflowConnectedComponents) {
+    movableIds = expandConnectedNodeIds(movableIds, edges, nodesById);
+  }
 
   if (!movableIds.size) {
     return { positions: [], profile: inferCanvasLayout(nodes, input.edges, movableIds, options) };
   }
 
-  const edges = normalizeEdges(input.edges, nodesById);
+  const originIds = new Set(
+    Array.from(input.originNodeIds || []).filter((id) => movableIds.has(id)),
+  );
   const hints = normalizeHints(input.hints, nodesById, movableIds);
   const profile = inferCanvasLayout(nodes, edges, movableIds, options);
   const components = collectMovableComponents(movableIds, edges, hints);
@@ -41,6 +48,7 @@ export function planIncrementalNodeLayout(input = {}, optionOverrides = {}) {
       nodesById,
       edges,
       hints,
+      originIds,
       occupied,
       profile,
       options,
@@ -131,6 +139,7 @@ function layoutComponent(context) {
     nodesById,
     edges,
     hints,
+    originIds,
     occupied,
     profile,
     options,
@@ -217,7 +226,9 @@ function layoutComponent(context) {
   });
   const baseOffset = anchorIds.length
     ? getAnchorOffset(anchorIds, graph, nodesById, edges)
-    : getIndependentOffset(rawRects, occupied, options);
+    : componentIds.some((id) => originIds.has(id))
+      ? getOriginOffset(componentIds.filter((id) => originIds.has(id)), graph, nodesById)
+      : getIndependentOffset(rawRects, occupied, options);
   const offset = findCollisionFreeOffset({
     rawRects,
     baseOffset,
@@ -277,6 +288,37 @@ function normalizeEdges(input, nodesById) {
       arrow: normalizeArrow(item?.arrow || item?.relationArrow),
     }];
   });
+}
+
+function expandConnectedNodeIds(seedIds, edges, nodesById) {
+  const expanded = new Set(Array.from(seedIds).filter((id) => !nodesById.get(id)?.obstacleOnly));
+  const adjacency = new Map(Array.from(nodesById, ([id, node]) => (
+    node.obstacleOnly ? null : [id, new Set()]
+  )).filter(Boolean));
+
+  for (const edge of edges) {
+    if (!adjacency.has(edge.sourceId) || !adjacency.has(edge.targetId)) {
+      continue;
+    }
+
+    adjacency.get(edge.sourceId).add(edge.targetId);
+    adjacency.get(edge.targetId).add(edge.sourceId);
+  }
+
+  const pending = [...expanded];
+
+  while (pending.length) {
+    const id = pending.pop();
+
+    for (const neighbor of adjacency.get(id) || []) {
+      if (!expanded.has(neighbor)) {
+        expanded.add(neighbor);
+        pending.push(neighbor);
+      }
+    }
+  }
+
+  return expanded;
 }
 
 function normalizeHints(input, nodesById, movableIds) {
@@ -508,6 +550,22 @@ function getAnchorOffset(anchorIds, graph, nodesById, edges) {
   };
 }
 
+function getOriginOffset(originIds, graph, nodesById) {
+  const offsets = originIds.map((id) => {
+    const actual = centerOf(nodesById.get(id));
+    const layoutNode = graph.node(id);
+    return {
+      x: actual.x - layoutNode.x,
+      y: actual.y - layoutNode.y,
+    };
+  });
+
+  return {
+    x: median(offsets.map((offset) => offset.x)),
+    y: median(offsets.map((offset) => offset.y)),
+  };
+}
+
 function getIndependentOffset(rawRects, occupied, options) {
   const componentBounds = getBounds(rawRects);
   const occupiedBounds = getBounds(occupied);
@@ -558,10 +616,10 @@ function findCollisionFreeOffset(context) {
   let bestScore = Number.POSITIVE_INFINITY;
 
   for (const candidate of candidates) {
-    const offset = {
+    const offset = constrainOffsetToCanvas(rawRects, {
       x: baseOffset.x + candidate.x,
       y: baseOffset.y + candidate.y,
-    };
+    }, options.canvasPadding);
     const positioned = rawRects.map((rect) => ({
       ...rect,
       x: snapToGrid(rect.x + offset.x, options.gridSize),
@@ -586,6 +644,15 @@ function findCollisionFreeOffset(context) {
   }
 
   return best;
+}
+
+function constrainOffsetToCanvas(rawRects, offset, canvasPadding) {
+  const minimumX = Math.min(...rawRects.map((rect) => rect.x + offset.x));
+  const minimumY = Math.min(...rawRects.map((rect) => rect.y + offset.y));
+  return {
+    x: offset.x + Math.max(0, canvasPadding - minimumX),
+    y: offset.y + Math.max(0, canvasPadding - minimumY),
+  };
 }
 
 function collisionScore({ positioned, occupied, nodesById, edges, options }) {
