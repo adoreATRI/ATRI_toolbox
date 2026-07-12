@@ -56,6 +56,8 @@ function createUpdaterHarness(overrides = {}) {
   const dialogs = [];
   const dialogResponses = [...(overrides.dialogResponses || [])];
   const progress = [];
+  const states = [];
+  const downloads = { opened: 0 };
   const window = {
     isDestroyed: () => false,
     setProgressBar: (value) => progress.push(value),
@@ -67,16 +69,21 @@ function createUpdaterHarness(overrides = {}) {
     },
     updater,
     getWindow: () => window,
+    isUpdateSupported: overrides.isUpdateSupported ?? true,
     showDialog: async (options) => {
       dialogs.push(options);
       return dialogResponses.shift() || { response: 1 };
     },
     logger: { warn() {} },
+    onStateChange: (state) => states.push(state),
+    openDownloadsPage: async () => {
+      downloads.opened += 1;
+    },
     setTimer: () => ({ unref() {} }),
     setIntervalTimer: () => ({ unref() {} }),
   });
 
-  return { controller, dialogs, progress, updater };
+  return { controller, dialogs, downloads, progress, states, updater };
 }
 
 function createHistoryHarness(rendererHandled, overrides = {}) {
@@ -180,6 +187,22 @@ test("development launcher hides only known Chromium startup diagnostics", () =>
   filter.flush();
 
   assert.equal(output, "important Electron failure\n");
+});
+
+test("Windows installer uses an assisted directory-selection flow", async () => {
+  const packageJson = JSON.parse(await fs.readFile(
+    new URL("../package.json", import.meta.url),
+    "utf8",
+  ));
+
+  assert.equal(packageJson.build.nsis.oneClick, false);
+  assert.equal(packageJson.build.nsis.allowToChangeInstallationDirectory, true);
+  assert.equal(packageJson.build.nsis.createDesktopShortcut, true);
+  assert.equal(packageJson.build.nsis.artifactName, "${name}-setup-${version}.${ext}");
+  assert.equal(packageJson.build.portable.artifactName, "${name}-portable-${version}.${ext}");
+  assert.equal(packageJson.build.appImage.artifactName, "${name}-${version}.${ext}");
+  assert.equal(packageJson.build.win.target.includes("nsis"), true);
+  assert.equal(packageJson.build.win.target.includes("portable"), true);
 });
 
 test("an imported draw.io file remains active and receives later saves", async (context) => {
@@ -355,6 +378,9 @@ test("updater downloads an available release and installs on confirmation", asyn
   assert.equal(harness.progress.includes(0.42), true);
   assert.equal(harness.progress.at(-1), -1);
   assert.deepEqual(harness.updater.quitArgs, [false, true]);
+  assert.equal(harness.states.some((state) => state.status === "checking"), true);
+  assert.equal(harness.states.some((state) => state.status === "downloading" && state.percent === 42), true);
+  assert.equal(harness.controller.getState().status, "installing");
 });
 
 test("manual update check reports when the current version is latest", async () => {
@@ -368,6 +394,7 @@ test("manual update check reports when the current version is latest", async () 
 
   assert.equal(harness.dialogs.length, 1);
   assert.equal(harness.dialogs[0].message, "当前已是最新版本");
+  assert.equal(harness.controller.getState().status, "up-to-date");
 });
 
 test("development builds do not contact the update provider", async () => {
@@ -377,4 +404,35 @@ test("development builds do not contact the update provider", async () => {
 
   assert.equal(harness.updater.checkCount, 0);
   assert.equal(harness.dialogs[0].message, "开发模式不检查更新");
+  assert.deepEqual(harness.controller.getState(), {
+    status: "development",
+    currentVersion: "0.2.0",
+    availableVersion: "",
+    percent: 0,
+    message: "开发模式不检查更新。",
+    canCheck: false,
+    canOpenDownloads: false,
+  });
+});
+
+test("unsupported packages route updates to the release downloads page", async () => {
+  const harness = createUpdaterHarness({
+    isUpdateSupported: false,
+    dialogResponses: [{ response: 0 }],
+  });
+  harness.controller.setup();
+  await harness.controller.check(true);
+
+  assert.equal(harness.updater.checkCount, 0);
+  assert.equal(harness.downloads.opened, 1);
+  assert.equal(harness.dialogs[0].message, "当前安装格式不支持应用内安装");
+  assert.deepEqual(harness.controller.getState(), {
+    status: "unsupported",
+    currentVersion: "0.2.0",
+    availableVersion: "",
+    percent: 0,
+    message: "当前安装格式请从发布页下载更新。",
+    canCheck: false,
+    canOpenDownloads: true,
+  });
 });

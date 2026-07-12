@@ -1,6 +1,6 @@
 {
   "name": "atri-toolbox",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Cross-platform local toolbox for ATRI utilities.",
   "license": "MIT",
@@ -70,11 +70,29 @@
       ],
       "category": "Utility"
     },
+    "appImage": {
+      "artifactName": "${name}-${version}.${ext}"
+    },
     "win": {
       "target": [
         "nsis",
         "portable"
       ]
+    },
+    "nsis": {
+      "artifactName": "${name}-setup-${version}.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ATRI Toolbox",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "portable": {
+      "artifactName": "${name}-portable-${version}.${ext}"
     }
   }
 }

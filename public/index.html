@@ -105,35 +105,56 @@
       <form id="settingsForm" method="dialog">
         <div class="dialog-header">
           <div>
-            <p class="eyebrow">大模型 API</p>
+            <p class="eyebrow">应用设置</p>
             <h2>设置</h2>
           </div>
           <button id="closeSettingsButton" class="icon-button" type="button" aria-label="关闭">×</button>
         </div>
 
-        <div class="settings-grid">
-          <label for="endpointInput">Chat Completions Endpoint</label>
-          <input id="endpointInput" type="url" placeholder="https://api.example.com/v1/chat/completions" />
-
-          <label for="modelInput">模型</label>
-          <input id="modelInput" type="text" placeholder="填写模型名称" />
-
-          <label for="apiKeyInput">API Key</label>
-          <input id="apiKeyInput" type="password" autocomplete="off" placeholder="sk-..." />
-
-          <label for="temperatureInput">Temperature</label>
-          <input id="temperatureInput" type="number" min="0" max="2" step="0.1" value="0.3" />
+        <div id="settingsTabs" class="settings-tabs" role="tablist" aria-label="设置类别">
+          <button id="modelSettingsTab" class="settings-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="modelSettingsPanel">模型 API</button>
+          <button id="updateSettingsTab" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="updateSettingsPanel" hidden>应用更新</button>
         </div>
 
-        <div class="settings-feedback">
-          <p class="settings-note">密钥仅保存在本机应用存储中，请勿在公共设备上保存。</p>
-          <p id="settingsStatusText" class="settings-status" role="status" aria-live="polite"></p>
-        </div>
+        <section id="modelSettingsPanel" class="settings-panel" role="tabpanel" aria-labelledby="modelSettingsTab">
+          <div class="settings-grid">
+            <label for="endpointInput">Chat Completions Endpoint</label>
+            <input id="endpointInput" type="url" placeholder="https://api.example.com/v1/chat/completions" />
 
-        <div class="dialog-actions">
-          <button id="testConnectionButton" class="ghost-button" type="button">测试连接</button>
-          <button class="primary-button" type="submit">保存设置</button>
-        </div>
+            <label for="modelInput">模型</label>
+            <input id="modelInput" type="text" placeholder="填写模型名称" />
+
+            <label for="apiKeyInput">API Key</label>
+            <input id="apiKeyInput" type="password" autocomplete="off" placeholder="sk-..." />
+
+            <label for="temperatureInput">Temperature</label>
+            <input id="temperatureInput" type="number" min="0" max="2" step="0.1" value="0.3" />
+          </div>
+
+          <div class="settings-feedback">
+            <p class="settings-note">密钥仅保存在本机应用存储中，请勿在公共设备上保存。</p>
+            <p id="settingsStatusText" class="settings-status" role="status" aria-live="polite"></p>
+          </div>
+
+          <div class="dialog-actions">
+            <button id="testConnectionButton" class="ghost-button" type="button">测试连接</button>
+            <button class="primary-button" type="submit">保存设置</button>
+          </div>
+        </section>
+
+        <section id="updateSettingsPanel" class="settings-panel update-settings-panel" role="tabpanel" aria-labelledby="updateSettingsTab" hidden>
+          <div class="update-summary">
+            <div>
+              <p id="currentVersionText" class="update-version">当前版本</p>
+              <p id="updateStatusText" class="settings-status" role="status" aria-live="polite">正在读取更新状态...</p>
+            </div>
+            <button id="checkUpdateButton" class="primary-button" type="button">检查更新</button>
+          </div>
+          <div id="updateProgressGroup" class="update-progress" hidden>
+            <progress id="updateProgress" max="100" value="0"></progress>
+            <span id="updateProgressText">0%</span>
+          </div>
+        </section>
       </form>
     </dialog>
 

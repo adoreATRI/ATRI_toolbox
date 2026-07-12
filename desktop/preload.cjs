@@ -14,6 +14,16 @@ const desktopApi = Object.freeze({
     apiKey: String(input.apiKey || ""),
     temperature: Number(input.temperature),
   }),
+  getUpdateState: () => ipcRenderer.invoke("atri:update:get-state"),
+  checkForUpdates: () => ipcRenderer.invoke("atri:update:check"),
+  openUpdateDownloads: () => ipcRenderer.invoke("atri:update:open-downloads"),
+  onUpdateState: (callback) => {
+    if (typeof callback !== "function") {
+      return;
+    }
+
+    ipcRenderer.on("atri:update:state", (_event, state) => callback(state));
+  },
 });
 
 contextBridge.exposeInMainWorld("atriDesktop", desktopApi);

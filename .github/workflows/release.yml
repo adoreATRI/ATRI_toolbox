@@ -88,12 +88,14 @@ jobs:
         with:
           name: ATRI Toolbox ${{ github.ref_name }}
           body: |
-            本版本包含 AI 描述增量编辑、跨平台自动更新、Ubuntu 退出修复和可收合的描述面板。
+            本版本改进 AI 关系链布局与连续描述编辑，支持导入文件持续写回，并新增可见的更新下载状态。
+
+            Windows 安装版现已提供安装向导，可选择安装范围、安装目录和快捷方式；应用更新会继续使用既有安装位置。
 
             Windows 用户可直接下载：
 
-            - `ATRI Toolbox Setup *.exe`：安装版
-            - `ATRI Toolbox *.exe`：便携版，下载后直接运行
+            - `atri-toolbox-setup-*.exe`：安装版
+            - `atri-toolbox-portable-*.exe`：便携版，下载后直接运行
 
             Linux 用户可直接下载：
 

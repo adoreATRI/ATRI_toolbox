@@ -25,9 +25,9 @@
 
 | 平台 | 文件 | 说明 |
 | --- | --- | --- |
-| Windows | `ATRI Toolbox Setup *.exe` | 安装版，推荐使用 |
-| Windows | `ATRI Toolbox *.exe` | 便携版，下载后直接运行 |
-| Linux | `*.AppImage` | 通用便携版 |
+| Windows | `atri-toolbox-setup-*.exe` | 安装版，可选择安装目录 |
+| Windows | `atri-toolbox-portable-*.exe` | 便携版，下载后直接运行 |
+| Linux | `atri-toolbox-*.AppImage` | 通用便携版 |
 | Debian / Ubuntu | `*.deb` | 系统安装包 |
 
 ## 本地开发

@@ -53,12 +53,23 @@ const dom = {
   settingsDialog: document.querySelector("#settingsDialog"),
   settingsForm: document.querySelector("#settingsForm"),
   closeSettingsButton: document.querySelector("#closeSettingsButton"),
+  settingsTabs: document.querySelector("#settingsTabs"),
+  modelSettingsTab: document.querySelector("#modelSettingsTab"),
+  updateSettingsTab: document.querySelector("#updateSettingsTab"),
+  modelSettingsPanel: document.querySelector("#modelSettingsPanel"),
+  updateSettingsPanel: document.querySelector("#updateSettingsPanel"),
   endpointInput: document.querySelector("#endpointInput"),
   modelInput: document.querySelector("#modelInput"),
   apiKeyInput: document.querySelector("#apiKeyInput"),
   temperatureInput: document.querySelector("#temperatureInput"),
   testConnectionButton: document.querySelector("#testConnectionButton"),
   settingsStatusText: document.querySelector("#settingsStatusText"),
+  currentVersionText: document.querySelector("#currentVersionText"),
+  updateStatusText: document.querySelector("#updateStatusText"),
+  checkUpdateButton: document.querySelector("#checkUpdateButton"),
+  updateProgressGroup: document.querySelector("#updateProgressGroup"),
+  updateProgress: document.querySelector("#updateProgress"),
+  updateProgressText: document.querySelector("#updateProgressText"),
   descriptionInput: document.querySelector("#descriptionInput"),
   statusText: document.querySelector("#statusText"),
   generationBadge: document.querySelector("#generationBadge"),
@@ -107,6 +118,7 @@ loadSettingsIntoForm();
 syncMapTitleInput();
 syncPromptPanelState();
 bindEvents();
+initializeApplicationUpdates();
 saveDiagramState();
 loadDrawioEditor();
 setStatus("正在载入 draw.io 编辑器...");
@@ -117,6 +129,7 @@ function bindEvents() {
   dom.settingsButton.addEventListener("click", () => {
     loadSettingsIntoForm();
     setSettingsStatus("");
+    selectSettingsTab("model");
     dom.settingsDialog.showModal();
   });
 
@@ -129,6 +142,9 @@ function bindEvents() {
   });
 
   dom.testConnectionButton.addEventListener("click", testConnection);
+  dom.modelSettingsTab.addEventListener("click", () => selectSettingsTab("model"));
+  dom.updateSettingsTab.addEventListener("click", () => selectSettingsTab("update"));
+  dom.checkUpdateButton.addEventListener("click", checkForApplicationUpdate);
   dom.descriptionInput.addEventListener("keydown", handleDescriptionKeydown);
   dom.promptToggleButton.addEventListener("click", togglePromptPanel);
 
@@ -151,6 +167,93 @@ function bindEvents() {
   window.addEventListener("message", handleDrawioMessage);
   window.addEventListener("keydown", handleGlobalKeydown, true);
   window.__atriHandleUndoShortcut = handleExternalUndoShortcut;
+}
+
+function initializeApplicationUpdates() {
+  if (!desktopApi) {
+    dom.settingsTabs.hidden = true;
+    dom.updateSettingsTab.hidden = true;
+    return;
+  }
+
+  dom.updateSettingsTab.hidden = false;
+  desktopApi.onUpdateState(syncApplicationUpdateState);
+  desktopApi.getUpdateState()
+    .then(syncApplicationUpdateState)
+    .catch((error) => {
+      syncApplicationUpdateState({
+        status: "error",
+        currentVersion: "",
+        message: error instanceof Error ? error.message : "无法读取更新状态。",
+        canCheck: true,
+      });
+    });
+}
+
+function selectSettingsTab(tab) {
+  const showUpdate = tab === "update" && Boolean(desktopApi);
+  dom.modelSettingsTab.classList.toggle("is-active", !showUpdate);
+  dom.modelSettingsTab.setAttribute("aria-selected", String(!showUpdate));
+  dom.updateSettingsTab.classList.toggle("is-active", showUpdate);
+  dom.updateSettingsTab.setAttribute("aria-selected", String(showUpdate));
+  dom.modelSettingsPanel.hidden = showUpdate;
+  dom.updateSettingsPanel.hidden = !showUpdate;
+}
+
+async function checkForApplicationUpdate() {
+  if (!desktopApi) {
+    return;
+  }
+
+  if (dom.checkUpdateButton.dataset.action === "downloads") {
+    dom.checkUpdateButton.disabled = true;
+
+    try {
+      await desktopApi.openUpdateDownloads();
+    } catch (error) {
+      dom.updateStatusText.textContent = error instanceof Error ? error.message : "无法打开下载页。";
+      dom.updateStatusText.style.color = "var(--coral)";
+    } finally {
+      dom.checkUpdateButton.disabled = false;
+    }
+
+    return;
+  }
+
+  dom.checkUpdateButton.disabled = true;
+  dom.updateStatusText.textContent = "正在检查更新...";
+  dom.updateStatusText.style.color = "var(--muted)";
+
+  try {
+    syncApplicationUpdateState(await desktopApi.checkForUpdates());
+  } catch (error) {
+    syncApplicationUpdateState({
+      status: "error",
+      currentVersion: dom.currentVersionText.textContent.replace(/^当前版本\s*/, ""),
+      message: error instanceof Error ? error.message : "检查更新失败。",
+      canCheck: true,
+    });
+  }
+}
+
+function syncApplicationUpdateState(input = {}) {
+  const status = String(input.status || "idle");
+  const currentVersion = String(input.currentVersion || "").trim();
+  const percent = clamp(Number(input.percent) || 0, 0, 100);
+  const showProgress = ["downloading", "downloaded", "installing"].includes(status);
+  const canOpenDownloads = Boolean(input.canOpenDownloads);
+
+  dom.currentVersionText.textContent = currentVersion
+    ? `当前版本 ${currentVersion}`
+    : "当前版本未知";
+  dom.updateStatusText.textContent = String(input.message || "尚未检查更新。");
+  dom.updateStatusText.style.color = status === "error" ? "var(--coral)" : "var(--muted)";
+  dom.checkUpdateButton.textContent = canOpenDownloads ? "打开下载页" : "检查更新";
+  dom.checkUpdateButton.dataset.action = canOpenDownloads ? "downloads" : "check";
+  dom.checkUpdateButton.disabled = canOpenDownloads ? false : !input.canCheck;
+  dom.updateProgressGroup.hidden = !showProgress;
+  dom.updateProgress.value = percent;
+  dom.updateProgressText.textContent = `${Math.round(percent)}%`;
 }
 
 function togglePromptPanel() {
@@ -1986,6 +2089,10 @@ function getDesktopApi() {
     "clearActiveDiagram",
     "loadModelSettings",
     "saveModelSettings",
+    "getUpdateState",
+    "checkForUpdates",
+    "openUpdateDownloads",
+    "onUpdateState",
   ];
 
   return api && methods.every((method) => typeof api[method] === "function") ? api : null;

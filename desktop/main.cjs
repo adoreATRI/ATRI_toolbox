@@ -23,11 +23,15 @@ let startServer = null;
 let cleanupPromise = null;
 let diagramFileController = null;
 let settingsStore = null;
+const releasesUrl = "https://github.com/adoreATRI/ATRI_toolbox/releases/latest";
 const updateController = createUpdateController({
   app,
   updater: autoUpdater,
   showDialog: showAppDialog,
   getWindow: () => mainWindow,
+  isUpdateSupported: supportsAutomaticUpdates(),
+  onStateChange: broadcastUpdateState,
+  openDownloadsPage: () => openExternalUrl(releasesUrl),
 });
 const historyController = createHistoryController({
   getWindow: () => mainWindow,
@@ -186,6 +190,18 @@ function openExternalUrl(url) {
   }
 }
 
+function supportsAutomaticUpdates() {
+  if (process.platform === "win32") {
+    return !process.env.PORTABLE_EXECUTABLE_DIR;
+  }
+
+  if (process.platform === "linux") {
+    return Boolean(process.env.APPIMAGE);
+  }
+
+  return false;
+}
+
 function createApplicationMenu() {
   const template = [
     {
@@ -252,6 +268,12 @@ function showAppDialog(options) {
   return dialog.showMessageBox(options);
 }
 
+function broadcastUpdateState(state) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("atri:update:state", state);
+  }
+}
+
 function setupDesktopBridge() {
   if (diagramFileController || settingsStore) {
     return;
@@ -279,6 +301,15 @@ function setupDesktopBridge() {
   registerTrustedHandler("atri:diagram:clear", () => diagramFileController.clearActiveDiagram());
   registerTrustedHandler("atri:settings:load", () => settingsStore.load());
   registerTrustedHandler("atri:settings:save", (_event, payload) => settingsStore.save(payload));
+  registerTrustedHandler("atri:update:get-state", () => updateController.getState());
+  registerTrustedHandler("atri:update:check", async () => {
+    await updateController.check(true);
+    return updateController.getState();
+  });
+  registerTrustedHandler("atri:update:open-downloads", () => {
+    openExternalUrl(releasesUrl);
+    return { opened: true };
+  });
 }
 
 function registerTrustedHandler(channel, handler) {
