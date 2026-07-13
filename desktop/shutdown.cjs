@@ -68,6 +68,20 @@ function createShutdownCoordinator(options) {
     return true;
   };
 
+  const handleWindowClose = (event) => {
+    if (phase === "ready") {
+      return false;
+    }
+
+    event.preventDefault();
+
+    if (phase === "idle") {
+      quit();
+    }
+
+    return true;
+  };
+
   const handleQuit = () => {
     if (forceExitTimer) {
       clearTimer(forceExitTimer);
@@ -77,6 +91,7 @@ function createShutdownCoordinator(options) {
 
   return {
     handleBeforeQuit,
+    handleWindowClose,
     handleQuit,
     get cleanupTask() {
       return cleanupTask;

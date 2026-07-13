@@ -305,6 +305,62 @@ test("keeps line-style words out of relation endpoint names", () => {
   }]);
 });
 
+test("parses explicit connection commands without creating bogus nodes", () => {
+  const currentDiagram = diagram({
+    nodes: [node("node-lance", "兰斯"), node("node-shilou", "希露")],
+  });
+  const cases = [
+    ["连接兰斯和希露，关系是朋友", "朋友", "none"],
+    ["将兰斯与希露连接，连线描述为同伴", "同伴", "none"],
+    ["给兰斯和希露添加一条关系为契约的连线", "契约", "none"],
+    ["兰斯连接到希露，连线描述为依赖", "依赖", "forward"],
+    ["连接兰斯和希露", "", "none"],
+  ];
+
+  for (const [description, label, arrow] of cases) {
+    const plan = createLocalOperationPlan(currentDiagram, description);
+
+    assert.deepEqual(plan.operations, [{
+      type: "connect",
+      edgeId: "ai-edge",
+      sourceId: "node-lance",
+      targetId: "node-shilou",
+      label,
+      arrow,
+      line: "solid",
+    }]);
+  }
+});
+
+test("understands relationship wording that includes between", () => {
+  const currentDiagram = diagram({
+    nodes: [node("node-lance", "兰斯"), node("node-shilou", "希露")],
+  });
+  const plan = createLocalOperationPlan(currentDiagram, "兰斯和希露之间是朋友关系");
+
+  assert.deepEqual(plan.operations, [{
+    type: "connect",
+    edgeId: "ai-edge",
+    sourceId: "node-lance",
+    targetId: "node-shilou",
+    label: "朋友",
+    arrow: "none",
+    line: "solid",
+  }]);
+});
+
+test("creates both missing endpoints before connecting them", () => {
+  const plan = createLocalOperationPlan(diagram(), "连接兰斯和希露，关系是同伴");
+  const additions = plan.operations.filter((operation) => operation.type === "add_node");
+  const connection = plan.operations.find((operation) => operation.type === "connect");
+
+  assert.deepEqual(additions.map((operation) => operation.title), ["兰斯", "希露"]);
+  assert.equal(connection.sourceId, additions[0].nodeId);
+  assert.equal(connection.targetId, additions[1].nodeId);
+  assert.equal(connection.label, "同伴");
+  assert.equal(connection.arrow, "none");
+});
+
 test("defers mixed intents instead of turning action text into a node name", () => {
   assert.equal(
     createLocalOperationPlan(diagram({ nodes: [node("node-lance", "兰斯")] }), "创建菲利斯并连接到兰斯"),

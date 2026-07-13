@@ -311,6 +311,40 @@ test("shutdown cleanup runs once and the second quit is allowed", async () => {
   coordinator.handleQuit();
 });
 
+test("closing the main window enters the coordinated shutdown flow", async () => {
+  let closeCount = 0;
+  let quitCount = 0;
+  let preventedCount = 0;
+  const event = { preventDefault: () => { preventedCount += 1; } };
+  const coordinator = createShutdownCoordinator({
+    close: async () => {
+      closeCount += 1;
+    },
+    quit: () => {
+      quitCount += 1;
+    },
+    forceExit: () => {},
+    cleanupTimeoutMs: 50,
+    forceExitTimeoutMs: 50,
+  });
+
+  assert.equal(coordinator.handleWindowClose(event), true);
+  assert.equal(preventedCount, 1);
+  assert.equal(quitCount, 1);
+
+  coordinator.handleBeforeQuit(event);
+  assert.equal(coordinator.handleWindowClose(event), true);
+  assert.equal(preventedCount, 3);
+  assert.equal(quitCount, 1);
+  await coordinator.cleanupTask;
+
+  assert.equal(closeCount, 1);
+  assert.equal(quitCount, 2);
+  assert.equal(coordinator.handleWindowClose(event), false);
+  assert.equal(preventedCount, 3);
+  coordinator.handleQuit();
+});
+
 test("shutdown continues after cleanup reaches its deadline", async () => {
   const errors = [];
   let quitCount = 0;

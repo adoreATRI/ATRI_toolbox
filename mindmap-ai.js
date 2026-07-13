@@ -179,7 +179,8 @@ export function createLocalOperationPlan(diagramInput, description) {
     return clientId;
   };
 
-  const additions = parseAddNodeDescriptions(text);
+  const fullRelation = parseRelationDescription(text);
+  const additions = fullRelation ? [] : parseAddNodeDescriptions(text);
 
   for (const addition of additions) {
     const parentRef = addition.parentTitle ? ensureNodeRef(addition.parentTitle) : "";
@@ -199,7 +200,7 @@ export function createLocalOperationPlan(diagramInput, description) {
 
   const clauses = splitDescriptionClauses(text);
   const relations = [];
-  const fullRelation = parseRelationDescription(text);
+  const relationClauses = new Set();
 
   if (fullRelation) {
     relations.push(fullRelation);
@@ -208,8 +209,17 @@ export function createLocalOperationPlan(diagramInput, description) {
   for (const clause of clauses) {
     const relation = parseRelationDescription(clause);
 
-    if (relation && !relations.some((item) => relationKey(item) === relationKey(relation))) {
-      relations.push(relation);
+    if (relation) {
+      relationClauses.add(clause);
+
+      if (!relations.some((item) => (
+        relationKey(item) === relationKey(relation)
+        || sameRelationEndpoints(item, relation)
+      ))) {
+        relations.push(relation);
+      }
+    } else if (fullRelation && isRelationContinuationClause(clause)) {
+      relationClauses.add(clause);
     }
   }
 
@@ -230,6 +240,10 @@ export function createLocalOperationPlan(diagramInput, description) {
   }
 
   for (const clause of clauses) {
+    if (relationClauses.has(clause)) {
+      continue;
+    }
+
     if (/(添加|新增|创建|加入|生成)/.test(clause) && parseAddNodeDescriptions(clause).length) {
       continue;
     }
@@ -744,6 +758,12 @@ function parseRelationDescription(description) {
   const normalized = normalizeCommand(description);
   const command = normalized.replace(/[，,](?:使用|采用)?(?:虚线|点线|点状线|点划线|普通线|普通连线|实线)(?:连接|连线)?$/g, "");
 
+  const explicitConnection = parseExplicitConnectionCommand(command, normalized);
+
+  if (explicitConnection) {
+    return explicitConnection;
+  }
+
   if (
     /(添加|新增|创建|加入|生成)/.test(normalized)
     || looksLikeTitleNamingText(normalized)
@@ -761,13 +781,13 @@ function parseRelationDescription(description) {
     return createRelation(pairMatch[1], pairMatch[2], pairMatch[3], normalized, "none");
   }
 
-  const mutualMatch = command.match(/^(.+?)(?:和|与|跟|同)(.+?)(?:是|为|存在|形成|建立)(.+?)(?:关系)?$/);
+  const mutualMatch = command.match(/^(.+?)(?:和|与|跟|同)(.+?)(?:之间)?(?:是|为|存在|形成|建立)(.+?)(?:关系)?$/);
 
   if (mutualMatch) {
     return createRelation(mutualMatch[1], mutualMatch[2], mutualMatch[3], normalized, "none");
   }
 
-  const linkMatch = command.match(/^(?:将|把)?(.+?)(?:连接到|连到|关联到|指向)(.+?)(?:，|,)?(?:关系|标签|连线文字)?(?:是|为|:|：)(.+)$/);
+  const linkMatch = command.match(/^(?:将|把)?(.+?)(?:连接到|连到|关联到|指向)(.+?)(?:，|,)?(?:关系|标签|连线(?:文字|描述)?)?(?:是|为|:|：)(.+)$/);
 
   if (linkMatch) {
     return createRelation(linkMatch[1], linkMatch[2], linkMatch[3], normalized, "forward");
@@ -787,16 +807,49 @@ function parseRelationDescription(description) {
 
   const childRole = compactRelationLabel(roleMatch[3]);
   const parentRole = inverseRelationRole(childRole);
+  const label = parentRole && parentRole !== childRole ? `${parentRole}/${childRole}` : childRole;
   return createRelation(
     roleMatch[2],
     roleMatch[1],
-    parentRole ? `${parentRole}/${childRole}` : childRole,
+    label,
     normalized,
     isSymmetricRelation(childRole) ? "none" : "forward",
   );
 }
 
-function createRelation(sourceTitle, targetTitle, label, description, defaultArrow) {
+function parseExplicitConnectionCommand(command, originalDescription) {
+  const pairedPatterns = [
+    /^(?:请)?(?:连接|连结|关联)[“"']?(.+?)[”"']?(?:和|与|跟)[“"']?(.+?)[”"']?(?:，|,)?(?:(?:关系|标签|连线(?:文字|描述)?)(?:设置|设定|标注|写)?(?:是|为|成|:|：)(.+))?$/,
+    /^(?:请)?(?:将|把)(.+?)(?:和|与|跟)(.+?)(?:连接|连结|关联|相连|连起来)(?:，|,)?(?:(?:关系|标签|连线(?:文字|描述)?)(?:设置|设定|标注|写)?(?:是|为|成|:|：)(.+))?$/,
+    /^(?:请)?(?:给|在)(.+?)(?:和|与|跟)(.+?)(?:之间)?(?:添加|新增|建立|生成|画)(?:一条|一个)?(?:关系|连线|连接)(?:设置|设定|标注|写)?(?:是|为|成|:|：)(.+?)(?:的)?(?:连线)?$/,
+    /^(?:请)?(?:在)?(.+?)(?:和|与|跟)(.+?)(?:之间)(?:添加|新增|建立|生成|画)(?:一条|一个)?(?:连线|连接)(?:，|,)(?:关系|标签|连线(?:文字|描述)?)(?:设置|设定|标注|写)?(?:是|为|成|:|：)(.+)$/,
+  ];
+
+  for (const pattern of pairedPatterns) {
+    const match = command.match(pattern);
+
+    if (match) {
+      return createRelation(match[1], match[2], match[3] || "", originalDescription, "none", true);
+    }
+  }
+
+  const directedMatch = command.match(/^(?:请)?(?:将|把)?(.+?)(?:连接到|连到|关联到|指向)(.+?)(?:，|,)?(?:(?:关系|标签|连线(?:文字|描述)?)(?:设置|设定|标注|写)?(?:是|为|成|:|：)(.+))?$/);
+
+  if (directedMatch) {
+    return createRelation(
+      directedMatch[1],
+      directedMatch[2],
+      directedMatch[3] || "",
+      originalDescription,
+      "forward",
+      true,
+    );
+  }
+
+  return null;
+}
+
+function createRelation(sourceTitle, targetTitle, label, description, defaultArrow, allowEmptyLabel = false) {
   if (/[，,。；;]/.test(String(sourceTitle || "")) || /[，,。；;]/.test(String(targetTitle || ""))) {
     return null;
   }
@@ -805,7 +858,12 @@ function createRelation(sourceTitle, targetTitle, label, description, defaultArr
   const target = compactRelationEndpoint(targetTitle);
   const compactLabel = compactRelationLabel(label);
 
-  if (!source || !target || !compactLabel) {
+  if (
+    !source
+    || !target
+    || (!compactLabel && !allowEmptyLabel)
+    || /(添加|新增|创建|加入|生成)/.test(`${source} ${target}`)
+  ) {
     return null;
   }
 
@@ -970,6 +1028,7 @@ function compactGeneratedTitle(value) {
 function compactRelationEndpoint(value) {
   return compactEntityTitle(value)
     .replace(/(?:使用|采用|通过)(?:虚线|点线|点状线|点划线|普通线|普通连线|实线|双向线|单向线)?$/g, "")
+    .replace(/之间$/g, "")
     .trim();
 }
 
@@ -979,6 +1038,7 @@ function hasUnsafeEmbeddedIntent(value) {
 
 function compactRelationLabel(value) {
   return compactEntityTitle(value)
+    .replace(/(?:的)?(?:连线|连接)$/g, "")
     .replace(/(?:之间)?(?:的)?关系$/g, "")
     .replace(/^(?:关系|标签|连线文字)(?:是|为|:|：)?/g, "")
     .replace(/^(?:虚线|点线|点状|点划线|普通线|普通连线|无箭头|无向)/g, "")
@@ -1003,6 +1063,24 @@ function titleKey(value) {
 
 function relationKey(relation) {
   return `${titleKey(relation.sourceTitle)}|${titleKey(relation.targetTitle)}|${titleKey(relation.label)}`;
+}
+
+function sameRelationEndpoints(first, second) {
+  const firstSource = titleKey(first.sourceTitle);
+  const firstTarget = titleKey(first.targetTitle);
+  const secondSource = titleKey(second.sourceTitle);
+  const secondTarget = titleKey(second.targetTitle);
+
+  return (firstSource === secondSource && firstTarget === secondTarget)
+    || (first.arrow === "none"
+      && second.arrow === "none"
+      && firstSource === secondTarget
+      && firstTarget === secondSource);
+}
+
+function isRelationContinuationClause(clause) {
+  return /^(?:关系|标签|连线(?:文字|描述)?)(?:设置|设定|标注|写)?(?:是|为|成|:|：)/.test(clause)
+    || /^(?:使用|采用)?(?:虚线|点线|点状线|点划线|普通线|普通连线|实线)(?:连接|连线)?$/.test(clause);
 }
 
 function looksLikeTitleNamingText(text) {

@@ -132,6 +132,147 @@ export function inferCanvasLayout(nodesInput = [], edgesInput = [], excludedIds 
   };
 }
 
+export function planEdgePresentation(input = {}, optionOverrides = {}) {
+  const options = {
+    canvasPadding: DEFAULT_OPTIONS.canvasPadding,
+    labelGap: 10,
+    labelOffset: 24,
+    ...optionOverrides,
+  };
+  const nodes = normalizeNodes(input.nodes);
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  const edges = normalizeEdges(input.edges, nodesById);
+  const obstacles = nodes.filter((node) => !node.obstacleOnly).map(toRect);
+  const placedLabels = [];
+
+  return edges.map((edge) => {
+    const source = nodesById.get(edge.sourceId);
+    const target = nodesById.get(edge.targetId);
+    const ports = edgePorts(source, target);
+    const segments = orthogonalEdgeSegments(source, target);
+    const size = measureEdgeLabel(edge.label);
+    const candidates = edgeLabelCandidates(options.labelOffset);
+    let best = null;
+
+    for (let index = 0; index < candidates.length; index += 1) {
+      const candidate = candidates[index];
+      const anchor = pointAlongSegments(segments, (candidate.x + 1) / 2);
+      const rect = {
+        id: `label-${edge.id}`,
+        x: anchor.point.x + (anchor.normal.x * candidate.y) - (size.width / 2),
+        y: anchor.point.y + (anchor.normal.y * candidate.y) - (size.height / 2),
+        width: size.width,
+        height: size.height,
+      };
+      let score = index * 0.05;
+
+      if (rect.x < options.canvasPadding || rect.y < options.canvasPadding) {
+        score += 8;
+      }
+
+      for (const obstacle of obstacles) {
+        if (rectanglesOverlap(rect, obstacle, options.labelGap)) {
+          score += obstacle.id === edge.sourceId || obstacle.id === edge.targetId ? 12 : 30;
+        }
+      }
+
+      for (const placed of placedLabels) {
+        if (rectanglesOverlap(rect, placed, options.labelGap)) {
+          score += 40;
+        }
+      }
+
+      if (!best || score < best.score) {
+        best = { ...candidate, rect, score };
+      }
+    }
+
+    placedLabels.push(best.rect);
+    return {
+      id: edge.id,
+      ...ports,
+      labelX: best.x,
+      labelY: best.y,
+      labelBounds: best.rect,
+    };
+  });
+}
+
+function edgePorts(source, target) {
+  const sourceCenter = centerOf(source);
+  const targetCenter = centerOf(target);
+  const dx = targetCenter.x - sourceCenter.x;
+  const dy = targetCenter.y - sourceCenter.y;
+
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    const forward = dx >= 0;
+    return {
+      axis: "horizontal",
+      exitX: forward ? 1 : 0,
+      exitY: 0.5,
+      entryX: forward ? 0 : 1,
+      entryY: 0.5,
+    };
+  }
+
+  const forward = dy >= 0;
+  return {
+    axis: "vertical",
+    exitX: 0.5,
+    exitY: forward ? 1 : 0,
+    entryX: 0.5,
+    entryY: forward ? 0 : 1,
+  };
+}
+
+function edgeLabelCandidates(offset) {
+  const distance = Math.max(18, finiteNumber(offset, 24));
+  const result = [];
+
+  for (const x of [0, -0.25, 0.25, -0.5, 0.5]) {
+    result.push(
+      { x, y: -distance },
+      { x, y: distance },
+      { x, y: -Math.round(distance * 1.5) },
+      { x, y: Math.round(distance * 1.5) },
+    );
+  }
+
+  return result;
+}
+
+function pointAlongSegments(segments, fraction) {
+  const fallback = segments[0] || [{ x: 0, y: 0 }, { x: 0, y: 0 }];
+  const lengths = segments.map(([start, end]) => Math.hypot(end.x - start.x, end.y - start.y));
+  const total = lengths.reduce((sum, length) => sum + length, 0);
+  let remaining = clamp(fraction, 0, 1) * total;
+
+  for (let index = 0; index < segments.length; index += 1) {
+    const [start, end] = segments[index];
+    const length = lengths[index];
+
+    if (remaining <= length || index === segments.length - 1) {
+      const ratio = length ? clamp(remaining / length, 0, 1) : 0;
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      return {
+        point: {
+          x: start.x + (dx * ratio),
+          y: start.y + (dy * ratio),
+        },
+        normal: length ? { x: -dy / length, y: dx / length } : { x: 0, y: 1 },
+      };
+    }
+
+    remaining -= length;
+  }
+
+  return {
+    point: { ...fallback[0] },
+    normal: { x: 0, y: 1 },
+  };
+}
+
 function layoutComponent(context) {
   const {
     componentIds,

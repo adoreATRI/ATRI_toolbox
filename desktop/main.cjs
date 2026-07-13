@@ -81,8 +81,12 @@ async function createMainWindow() {
     mainWindow.maximize();
   }
 
-  mainWindow.on("close", () => {
+  mainWindow.on("close", (event) => {
     saveWindowState(mainWindow);
+
+    if (process.platform !== "darwin") {
+      shutdownCoordinator.handleWindowClose(event);
+    }
   });
 
   mainWindow.on("closed", () => {

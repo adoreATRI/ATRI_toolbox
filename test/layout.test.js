@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   inferCanvasLayout,
+  planEdgePresentation,
   planIncrementalNodeLayout,
   resizeRectAroundCenter,
 } from "../public/graph-layout.js";
@@ -229,4 +230,67 @@ test("resizes a node around its center so alignment does not drift", () => {
   });
   assert.equal(original.x + (original.width / 2), resized.x + (resized.width / 2));
   assert.equal(original.y + (original.height / 2), resized.y + (resized.height / 2));
+});
+
+test("routes horizontal and vertical edges through centered side ports", () => {
+  const result = planEdgePresentation({
+    nodes: [
+      node("left", 80, 100),
+      node("right", 500, 100),
+      node("bottom", 500, 420),
+    ],
+    edges: [
+      edge("horizontal", "left", "right", { label: "契约" }),
+      edge("vertical", "right", "bottom", { label: "管理" }),
+    ],
+  });
+
+  assert.deepEqual(result[0], {
+    ...result[0],
+    axis: "horizontal",
+    exitX: 1,
+    exitY: 0.5,
+    entryX: 0,
+    entryY: 0.5,
+  });
+  assert.equal(result[0].labelX, 0);
+  assert.equal(result[1].axis, "vertical");
+  assert.equal(result[1].exitX, 0.5);
+  assert.equal(result[1].exitY, 1);
+  assert.equal(result[1].entryY, 0);
+});
+
+test("moves a relation label away from a node occupying the edge midpoint", () => {
+  const result = planEdgePresentation({
+    nodes: [
+      node("left", 80, 200),
+      node("right", 780, 200),
+      node("obstacle", 430, 150, { width: 180, height: 50 }),
+    ],
+    edges: [edge("relation", "left", "right", { label: "长期契约关系" })],
+  });
+
+  assert.equal(result[0].labelX, 0);
+  assert.ok(result[0].labelY > 0);
+  assert.ok(
+    result[0].labelBounds.x + result[0].labelBounds.width <= 430
+      || result[0].labelBounds.x >= 610
+      || result[0].labelBounds.y + result[0].labelBounds.height <= 150
+      || result[0].labelBounds.y >= 200,
+  );
+});
+
+test("separates labels for parallel relationships", () => {
+  const result = planEdgePresentation({
+    nodes: [node("left", 80, 200), node("right", 780, 200)],
+    edges: [
+      edge("first", "left", "right", { label: "第一关系" }),
+      edge("second", "left", "right", { label: "第二关系" }),
+    ],
+  });
+
+  assert.notDeepEqual(
+    [result[0].labelX, result[0].labelY],
+    [result[1].labelX, result[1].labelY],
+  );
 });

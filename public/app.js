@@ -1,7 +1,9 @@
 import {
+  planEdgePresentation,
   planIncrementalNodeLayout,
   resizeRectAroundCenter,
 } from "./graph-layout.js";
+import { createUndoTimeline } from "./drawio-history.js";
 
 const STORAGE_KEYS = {
   drawioXml: "atri.toolbox.drawio.xml",
@@ -45,7 +47,7 @@ const LAYOUT = {
   minCanvasPadding: 40,
   overlapGap: 34,
   labelOffsetX: 0,
-  labelOffsetY: -18,
+  labelOffsetY: -24,
 };
 
 const dom = {
@@ -100,7 +102,12 @@ const state = {
   xmlExportRequest: null,
   saveTimer: 0,
   isGenerating: false,
-  aiUndoStack: [],
+  undoTimeline: createUndoTimeline(),
+  drawioMergeRequest: null,
+  externalMutationInFlight: false,
+  undoInProgress: false,
+  pendingNativeUndoEvents: 0,
+  nativeUndoResetTimer: 0,
   mapTitleBeforeEdit: "",
   isPromptCollapsed: loadPromptCollapsed(),
   pageScrollPosition: { x: 0, y: 0 },
@@ -325,7 +332,7 @@ function handleExternalUndoShortcut() {
 }
 
 function handleApplicationUndo() {
-  if (state.isGenerating) {
+  if (state.isGenerating || state.undoInProgress) {
     return true;
   }
 
@@ -337,17 +344,53 @@ function handleApplicationUndo() {
 
   state.lastUndoShortcutAt = now;
 
-  if (state.aiUndoStack.length) {
-    undoLastDescriptionChange();
+  const entry = state.undoTimeline.pop();
+
+  if (entry?.type === "drawio") {
+    requestNativeDrawioUndo();
+    dom.generationBadge.textContent = "已撤回";
+    setStatus("已撤回上一次手动修改。");
+    return true;
+  }
+
+  if (entry?.type === "snapshot") {
+    void undoSnapshotChange(entry);
     return true;
   }
 
   if (state.drawioReady) {
-    invokeDrawioAction("undo");
+    requestNativeDrawioUndo();
     return true;
   }
 
   return false;
+}
+
+function requestNativeDrawioUndo() {
+  state.pendingNativeUndoEvents += 1;
+  window.clearTimeout(state.nativeUndoResetTimer);
+  state.nativeUndoResetTimer = window.setTimeout(() => {
+    state.pendingNativeUndoEvents = 0;
+  }, 1200);
+  invokeDrawioAction("undo");
+}
+
+function recordEditorChangeForUndo() {
+  if (state.externalMutationInFlight) {
+    return;
+  }
+
+  if (state.pendingNativeUndoEvents > 0) {
+    state.pendingNativeUndoEvents -= 1;
+
+    if (state.pendingNativeUndoEvents === 0) {
+      window.clearTimeout(state.nativeUndoResetTimer);
+    }
+
+    return;
+  }
+
+  state.undoTimeline.pushEditorChange();
 }
 
 function shouldUseNativeTextUndo(target) {
@@ -388,7 +431,7 @@ function handleDrawioMessage(event) {
 
   if (message.event === "init") {
     state.drawioReady = true;
-    sendDrawioLoad(false);
+    sendDrawioLoad({ rememberScroll: false });
     return;
   }
 
@@ -400,9 +443,14 @@ function handleDrawioMessage(event) {
     return;
   }
 
+  if (message.event === "merge") {
+    completeDrawioMerge(message);
+    return;
+  }
+
   if (message.event === "autosave") {
-    if (!state.pendingLoad) {
-      updateDiagramXmlFromEditor(message.xml);
+    if (!state.pendingLoad && updateDiagramXmlFromEditor(message.xml)) {
+      recordEditorChangeForUndo();
     }
 
     return;
@@ -436,23 +484,30 @@ function handleDrawioMessage(event) {
   }
 }
 
-function sendDrawioLoad(rememberScroll = true) {
+function sendDrawioLoad(options = {}) {
+  const rememberScroll = options.rememberScroll !== false;
+  const fit = options.fit !== false;
+
   if (rememberScroll) {
     rememberPageScrollPosition();
   }
 
   state.pendingLoad = true;
-
-  postDrawio({
+  const message = {
     action: "load",
     xml: state.diagramXml,
     autosave: 1,
     title: `${state.diagramTitle || DEFAULT_MAP_TITLE}.drawio`,
-    fit: 1,
     noExitBtn: 1,
     saveAndExit: 0,
     exportProtocol: true,
-  });
+  };
+
+  if (fit) {
+    message.fit = 1;
+  }
+
+  postDrawio(message);
 }
 
 function rememberPageScrollPosition() {
@@ -499,17 +554,26 @@ function parseDrawioMessage(data) {
 
 function updateDiagramXmlFromEditor(xml) {
   if (!xml) {
-    return;
+    return false;
   }
 
+  let normalized;
+
   try {
-    state.pendingEditorXml = normalizeDrawioXml(xml, state.diagramTitle);
+    normalized = normalizeDrawioXml(xml, state.diagramTitle);
   } catch {
-    return;
+    return false;
   }
+
+  if (normalized === (state.pendingEditorXml || state.diagramXml)) {
+    return false;
+  }
+
+  state.pendingEditorXml = normalized;
 
   window.clearTimeout(state.saveTimer);
   state.saveTimer = window.setTimeout(commitPendingEditorXml, 80);
+  return true;
 }
 
 function commitPendingEditorXml() {
@@ -535,6 +599,72 @@ function completeXmlExport(xml) {
   const request = state.xmlExportRequest;
   state.xmlExportRequest = null;
   request.resolve(xml || "");
+}
+
+function completeDrawioMerge(message) {
+  const request = state.drawioMergeRequest;
+
+  if (!request || message.message?.requestId !== request.id) {
+    return;
+  }
+
+  window.clearTimeout(request.timer);
+  state.drawioMergeRequest = null;
+
+  if (message.error) {
+    request.reject(new Error(String(message.error.message || message.error)));
+  } else {
+    request.resolve();
+  }
+}
+
+function requestDrawioMerge(xml) {
+  if (!state.drawioReady || state.pendingLoad) {
+    return Promise.reject(new Error("draw.io 编辑器尚未准备完成。"));
+  }
+
+  if (state.drawioMergeRequest) {
+    return state.drawioMergeRequest.promise;
+  }
+
+  const id = `atri-merge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const request = {
+    id,
+    promise: null,
+    resolve: null,
+    reject: null,
+    timer: 0,
+  };
+
+  request.promise = new Promise((resolve, reject) => {
+    request.resolve = resolve;
+    request.reject = reject;
+    request.timer = window.setTimeout(() => {
+      if (state.drawioMergeRequest === request) {
+        state.drawioMergeRequest = null;
+      }
+
+      reject(new Error("draw.io 增量修改响应超时。"));
+    }, 5000);
+  });
+
+  state.drawioMergeRequest = request;
+  postDrawio({
+    action: "merge",
+    xml,
+    requestId: id,
+  });
+  return request.promise;
+}
+
+async function mergeDiagramXmlIntoEditor(xml) {
+  state.externalMutationInFlight = true;
+
+  try {
+    await requestDrawioMerge(xml);
+  } finally {
+    state.externalMutationInFlight = false;
+  }
 }
 
 function requestLatestDiagramXml() {
@@ -575,38 +705,43 @@ function captureDiagramSnapshot() {
   };
 }
 
-function pushDescriptionUndoSnapshot(snapshot) {
+async function undoSnapshotChange(entry) {
+  const snapshot = entry?.snapshot;
+
   if (!snapshot?.xml) {
     return;
   }
 
-  state.aiUndoStack.push(snapshot);
-
-  if (state.aiUndoStack.length > 30) {
-    state.aiUndoStack.shift();
-  }
-}
-
-function undoLastDescriptionChange() {
-  const snapshot = state.aiUndoStack.pop();
-
-  if (!snapshot) {
-    return;
-  }
-
+  const current = captureDiagramSnapshot();
+  state.undoInProgress = true;
   state.diagramXml = snapshot.xml;
   state.diagramTitle = snapshot.title || DEFAULT_MAP_TITLE;
   state.pendingEditorXml = "";
   syncMapTitleInput();
-  saveDiagramState();
-  dom.generationBadge.textContent = "已撤回";
-  state.pendingStatus = "已撤回上一次描述修改。";
-  setStatus("已撤回上一次描述修改。");
 
-  if (state.drawioReady) {
-    sendDrawioLoad();
-  } else {
-    loadDrawioEditor();
+  try {
+    saveDiagramState();
+
+    if (state.drawioReady && !state.pendingLoad) {
+      await mergeDiagramXmlIntoEditor(state.diagramXml);
+    } else if (state.drawioReady) {
+      sendDrawioLoad({ fit: false });
+    } else {
+      loadDrawioEditor();
+    }
+
+    dom.generationBadge.textContent = "已撤回";
+    setStatus("已撤回上一次描述修改。");
+  } catch (error) {
+    state.diagramXml = current.xml;
+    state.diagramTitle = current.title;
+    state.pendingEditorXml = "";
+    state.undoTimeline.restore(entry);
+    syncMapTitleInput();
+    saveDiagramState();
+    setStatus(error instanceof Error ? error.message : "无法撤回上一次修改。", true);
+  } finally {
+    state.undoInProgress = false;
   }
 }
 
@@ -647,7 +782,7 @@ async function generateMindMap() {
     return;
   }
 
-  let undoPushed = false;
+  let undoEntry = null;
   let rollbackSnapshot = null;
   const previousBadge = dom.generationBadge.textContent;
   dom.descriptionInput.value = "";
@@ -691,8 +826,7 @@ async function generateMindMap() {
     );
 
     rollbackSnapshot = captureDiagramSnapshot();
-    pushDescriptionUndoSnapshot(rollbackSnapshot);
-    undoPushed = true;
+    undoEntry = state.undoTimeline.pushSnapshot(rollbackSnapshot);
     state.diagramXml = result.xml;
     state.diagramTitle = result.title;
     state.pendingEditorXml = "";
@@ -702,16 +836,19 @@ async function generateMindMap() {
     state.pendingStatus = payload.summary || `已应用 ${result.appliedCount} 项局部修改。`;
     setStatus(state.pendingStatus);
 
-    if (state.drawioReady) {
-      sendDrawioLoad();
+    if (state.drawioReady && !state.pendingLoad) {
+      await mergeDiagramXmlIntoEditor(state.diagramXml);
+      state.pendingStatus = "";
+    } else if (state.drawioReady) {
+      sendDrawioLoad({ fit: false });
     } else {
       loadDrawioEditor();
     }
 
     rollbackSnapshot = null;
   } catch (error) {
-    if (undoPushed) {
-      state.aiUndoStack.pop();
+    if (undoEntry) {
+      state.undoTimeline.remove(undoEntry);
     }
 
     if (rollbackSnapshot) {
@@ -728,7 +865,7 @@ async function generateMindMap() {
 
       if (state.drawioReady) {
         try {
-          sendDrawioLoad();
+          sendDrawioLoad({ fit: false });
         } catch {
           // Keep the original error as the user-facing failure reason.
         }
@@ -786,7 +923,7 @@ function replaceMindMap(input, message, badge) {
   const map = normalizeAppMap(input);
   state.diagramTitle = map.title || DEFAULT_MAP_TITLE;
   state.diagramXml = mindMapToDrawioXml(map);
-  state.aiUndoStack = [];
+  state.undoTimeline.clear();
 
   syncMapTitleInput();
   saveDiagramState();
@@ -930,7 +1067,7 @@ function applyImportedDiagram(text, fileName, options = {}) {
     state.diagramTitle = stripExtension(fileName)
       || extractTitleFromDrawioXml(state.diagramXml)
       || DEFAULT_MAP_TITLE;
-    state.aiUndoStack = [];
+    state.undoTimeline.clear();
     state.pendingEditorXml = "";
     syncMapTitleInput();
     saveDiagramState({ writeThrough: options.writeThrough !== false });
@@ -1087,6 +1224,7 @@ function applyMindMapOperationsToDrawioXml(xml, operations, diagramTitle = DEFAU
   const edgesById = collectEdgeCellsById(graphRoot);
   const layoutState = {
     movableNodeIds: new Set(),
+    touchedEdgeIds: new Set(),
     hints: [],
     initialConnectionCounts: countConnectionsByNode(edgesById.values()),
     originNodeIds: new Set(verticesById.keys()),
@@ -1179,6 +1317,7 @@ function applyMindMapOperationsToDrawioXml(xml, operations, diagramTitle = DEFAU
         relationArrow: arrow,
         relationLine: operation.line,
       });
+      layoutState.touchedEdgeIds.add(edge.getAttribute("id"));
       appliedCount += 1;
       continue;
     }
@@ -1191,6 +1330,7 @@ function applyMindMapOperationsToDrawioXml(xml, operations, diagramTitle = DEFAU
         relationArrow: Object.hasOwn(operation, "arrow") ? operation.arrow : current.arrow,
         relationLine: Object.hasOwn(operation, "line") ? operation.line : current.line,
       });
+      layoutState.touchedEdgeIds.add(operation.edgeId);
       appliedCount += 1;
       continue;
     }
@@ -1212,7 +1352,19 @@ function applyMindMapOperationsToDrawioXml(xml, operations, diagramTitle = DEFAU
     throw new Error(`不支持的思维导图操作：${operation.type || "(empty)"}`);
   }
 
-  applyIncrementalNodeLayout(graphRoot, layoutState);
+  const movedNodeIds = applyIncrementalNodeLayout(graphRoot, layoutState);
+  const relatedEdgeIds = new Set(layoutState.touchedEdgeIds);
+
+  for (const edge of graphRoot.querySelectorAll('mxCell[edge="1"]')) {
+    if (
+      movedNodeIds.has(edge.getAttribute("source"))
+      || movedNodeIds.has(edge.getAttribute("target"))
+    ) {
+      relatedEdgeIds.add(edge.getAttribute("id"));
+    }
+  }
+
+  applyManagedEdgePresentation(graphRoot, relatedEdgeIds);
   updateDiagramMetadata(documentXml, nextTitle);
 
   return {
@@ -1411,7 +1563,7 @@ function markConnectionLayoutNodes(layoutState, sourceId, targetId) {
 
 function applyIncrementalNodeLayout(graphRoot, layoutState) {
   if (!layoutState.movableNodeIds.size) {
-    return;
+    return new Set();
   }
 
   const vertices = getVertexCells(graphRoot);
@@ -1465,6 +1617,49 @@ function applyIncrementalNodeLayout(graphRoot, layoutState) {
       geometry.setAttribute("x", String(position.x));
       geometry.setAttribute("y", String(position.y));
     }
+  }
+
+  return new Set(layout.positions.map((position) => position.id));
+}
+
+function applyManagedEdgePresentation(graphRoot, edgeIds) {
+  if (!edgeIds.size) {
+    return;
+  }
+
+  const nodes = getVertexCells(graphRoot).flatMap((cell) => {
+    const geometry = getCellGeometry(cell);
+    const id = cell.getAttribute("id");
+
+    return id && geometry ? [{ id, ...geometry, obstacleOnly: id === "atri-root" }] : [];
+  });
+  const edgesById = collectEdgeCellsById(graphRoot);
+  const edges = Array.from(edgeIds).flatMap((id) => {
+    const edge = edgesById.get(id);
+
+    if (!edge) {
+      return [];
+    }
+
+    const relation = extractEdgeRelationMeta(edge);
+    return [{
+      id,
+      sourceId: edge.getAttribute("source"),
+      targetId: edge.getAttribute("target"),
+      label: relation.label,
+      arrow: relation.arrow,
+    }];
+  });
+  const presentations = planEdgePresentation({ nodes, edges }, {
+    canvasPadding: LAYOUT.minCanvasPadding,
+    labelOffset: Math.abs(LAYOUT.labelOffsetY),
+  });
+
+  for (const presentation of presentations) {
+    const edge = edgesById.get(presentation.id);
+    const relation = extractEdgeRelationMeta(edge);
+    edge.setAttribute("style", formatEdgeStyle(relation.arrow, relation.line, presentation));
+    updateEdgeLabelGeometry(edge, presentation);
   }
 }
 
@@ -1608,16 +1803,17 @@ function updateEdgeRelation(edge, node) {
   updateEdgeLabelGeometry(edge);
 }
 
-function updateEdgeLabelGeometry(edge) {
+function updateEdgeLabelGeometry(edge, presentation = null) {
   const geometry = edge.querySelector("mxGeometry");
 
   if (!geometry) {
     return;
   }
 
-  geometry.setAttribute("x", String(LAYOUT.labelOffsetX));
-  geometry.setAttribute("y", String(LAYOUT.labelOffsetY));
+  geometry.setAttribute("x", String(presentation?.labelX ?? LAYOUT.labelOffsetX));
+  geometry.setAttribute("y", String(presentation?.labelY ?? LAYOUT.labelOffsetY));
   geometry.setAttribute("relative", "1");
+  geometry.querySelector('mxPoint[as="offset"]')?.remove();
 }
 
 function updateDiagramMetadata(documentXml, title) {
@@ -1747,22 +1943,46 @@ function formatRelationLabel(relation) {
   return normalizeText(relation || "", 40);
 }
 
-function formatEdgeStyle(relationArrow = "forward", relationLine = "solid") {
+function formatEdgeStyle(relationArrow = "forward", relationLine = "solid", presentation = null) {
   const arrow = normalizeRelationArrow(relationArrow);
   const line = normalizeRelationLine(relationLine);
   const parts = [
     "edgeStyle=orthogonalEdgeStyle",
+    "orthogonal=1",
+    "curved=0",
     "rounded=1",
     "orthogonalLoop=1",
     "jettySize=auto",
+    "jumpStyle=arc",
+    "jumpSize=8",
     "html=1",
     "strokeColor=#2f6f6d",
     "fontColor=#235453",
     "fontSize=12",
+    "fontStyle=0",
+    "align=center",
+    "verticalAlign=middle",
+    "labelPosition=center",
+    "verticalLabelPosition=middle",
     "labelBackgroundColor=#ffffff",
-    "labelBorderColor=#ccd7d5",
-    "spacing=8",
+    "labelBorderColor=none",
+    "spacing=6",
+    "sourcePerimeterSpacing=6",
+    "targetPerimeterSpacing=6",
   ];
+
+  if (presentation) {
+    parts.push(
+      `exitX=${presentation.exitX}`,
+      `exitY=${presentation.exitY}`,
+      "exitDx=0",
+      "exitDy=0",
+      `entryX=${presentation.entryX}`,
+      `entryY=${presentation.entryY}`,
+      "entryDx=0",
+      "entryDy=0",
+    );
+  }
 
   if (arrow === "none") {
     parts.push("startArrow=none", "endArrow=none");
