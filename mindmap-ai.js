@@ -179,8 +179,8 @@ export function createLocalOperationPlan(diagramInput, description) {
     return clientId;
   };
 
-  const fullRelation = parseRelationDescription(text);
-  const additions = fullRelation ? [] : parseAddNodeDescriptions(text);
+  const relationAnalysis = analyzeExplicitRelations(text);
+  const additions = parseAddNodeDescriptions(relationAnalysis.additionText);
 
   for (const addition of additions) {
     const parentRef = addition.parentTitle ? ensureNodeRef(addition.parentTitle) : "";
@@ -198,30 +198,7 @@ export function createLocalOperationPlan(diagramInput, description) {
     }
   }
 
-  const clauses = splitDescriptionClauses(text);
-  const relations = [];
-  const relationClauses = new Set();
-
-  if (fullRelation) {
-    relations.push(fullRelation);
-  }
-
-  for (const clause of clauses) {
-    const relation = parseRelationDescription(clause);
-
-    if (relation) {
-      relationClauses.add(clause);
-
-      if (!relations.some((item) => (
-        relationKey(item) === relationKey(relation)
-        || sameRelationEndpoints(item, relation)
-      ))) {
-        relations.push(relation);
-      }
-    } else if (fullRelation && isRelationContinuationClause(clause)) {
-      relationClauses.add(clause);
-    }
-  }
+  const { clauses, relations, relationClauses } = relationAnalysis;
 
   for (const relation of relations) {
     const sourceId = ensureNodeRef(relation.sourceTitle);
@@ -346,6 +323,91 @@ export function createLocalOperationPlan(diagramInput, description) {
   plan.summary = `已识别 ${plan.operations.length} 项局部修改。`;
 
   return plan.operations.length ? plan : null;
+}
+
+export function augmentOperationPlanWithExplicitRelations(planInput, diagramInput, description) {
+  const diagram = normalizeDiagramSnapshot(diagramInput);
+  const plan = normalizeOperationPlan(planInput, diagram);
+  const relations = analyzeExplicitRelations(description).relations;
+
+  if (!relations.length) {
+    return plan;
+  }
+
+  const operations = plan.operations.map((operation) => ({ ...operation }));
+  const projectedNodes = new Map(diagram.nodes.map((node) => [node.id, { ...node }]));
+
+  for (const operation of operations) {
+    if (operation.type === "add_node") {
+      projectedNodes.set(operation.nodeId, {
+        id: operation.nodeId,
+        title: operation.title,
+        note: operation.note || "",
+      });
+    } else if (operation.type === "update_node" && projectedNodes.has(operation.nodeId)) {
+      Object.assign(projectedNodes.get(operation.nodeId), operation);
+    } else if (operation.type === "remove_node") {
+      projectedNodes.delete(operation.nodeId);
+    }
+  }
+
+  const usedRefs = new Set([
+    ...diagram.cellIds,
+    ...projectedNodes.keys(),
+    ...operations.flatMap((operation) => [operation.nodeId, operation.edgeId]).filter(Boolean),
+  ]);
+  let explicitNodeIndex = 0;
+  const resolveTitle = (title) => {
+    const matches = Array.from(projectedNodes.values()).filter((node) => titleKey(node.title) === titleKey(title));
+
+    if (matches.length > 1) {
+      return "";
+    }
+
+    if (matches.length === 1) {
+      return matches[0].id;
+    }
+
+    let clientId = "";
+
+    do {
+      explicitNodeIndex += 1;
+      clientId = `explicit-node-${explicitNodeIndex}`;
+    } while (usedRefs.has(clientId));
+
+    usedRefs.add(clientId);
+    operations.push({
+      type: "add_node",
+      nodeId: clientId,
+      title,
+      note: "",
+    });
+    projectedNodes.set(clientId, { id: clientId, title, note: "" });
+    return clientId;
+  };
+
+  for (const relation of relations) {
+    const sourceId = resolveTitle(relation.sourceTitle);
+    const targetId = resolveTitle(relation.targetTitle);
+
+    if (!sourceId || !targetId || sourceId === targetId) {
+      continue;
+    }
+
+    operations.push({
+      type: "connect",
+      sourceId,
+      targetId,
+      label: relation.label,
+      arrow: relation.arrow,
+      line: relation.line,
+    });
+  }
+
+  return normalizeOperationPlan({
+    summary: plan.summary,
+    operations,
+  }, diagram);
 }
 
 export function buildMindMapOperationMessages(diagramInput, description) {
@@ -755,8 +817,15 @@ function extractNamedTitles(description) {
 }
 
 function parseRelationDescription(description) {
-  const normalized = normalizeCommand(description);
+  const normalized = normalizeCommand(description)
+    .replace(/^(?:然后|接着|随后|再)(?=(?:将|把|连接|连结|关联|创建|新增|添加|生成))/, "");
   const command = normalized.replace(/[，,](?:使用|采用)?(?:虚线|点线|点状线|点划线|普通线|普通连线|实线)(?:连接|连线)?$/g, "");
+
+  const inlineAddConnection = parseInlineAddConnectionCommand(command, normalized);
+
+  if (inlineAddConnection) {
+    return inlineAddConnection;
+  }
 
   const explicitConnection = parseExplicitConnectionCommand(command, normalized);
 
@@ -817,6 +886,64 @@ function parseRelationDescription(description) {
   );
 }
 
+function parseInlineAddConnectionCommand(command, originalDescription) {
+  const match = command.match(/^(?:请)?(?:创建|新增|添加|生成|加入)(?:一个|一条|1个)?(.+?)(?:节点)?并(?:将|把)?(?:它|其|该节点|这个节点)?(?:连接到|连到|关联到|指向)(.+?)(?:，|,)?(?:(?:关系|标签|连线(?:文字|描述)?)(?:设置|设定|标注|写)?(?:是|为|成|:|：)(.+))?$/);
+
+  return match
+    ? createRelation(match[1], match[2], match[3] || "", originalDescription, "forward", true)
+    : null;
+}
+
+function analyzeExplicitRelations(description) {
+  const text = normalizeText(description, 2000);
+  const clauses = splitDescriptionClauses(text);
+  const relations = [];
+  const relationClauses = new Set();
+  const addRelation = (relation) => {
+    if (
+      relation
+      && !relations.some((item) => (
+        relationKey(item) === relationKey(relation)
+        || sameRelationEndpoints(item, relation)
+      ))
+    ) {
+      relations.push(relation);
+    }
+  };
+
+  addRelation(parseRelationDescription(text));
+
+  for (let index = 0; index < clauses.length; index += 1) {
+    const clause = clauses[index];
+    const nextClause = clauses[index + 1] || "";
+    const combined = nextClause && isRelationContinuationClause(nextClause)
+      ? `${clause}，${nextClause}`
+      : "";
+    const relation = combined
+      ? parseRelationDescription(combined)
+      : parseRelationDescription(clause);
+
+    if (!relation) {
+      continue;
+    }
+
+    addRelation(relation);
+    relationClauses.add(clause);
+
+    if (combined) {
+      relationClauses.add(nextClause);
+      index += 1;
+    }
+  }
+
+  return {
+    clauses,
+    relations,
+    relationClauses,
+    additionText: clauses.filter((clause) => !relationClauses.has(clause)).join("，"),
+  };
+}
+
 function parseExplicitConnectionCommand(command, originalDescription) {
   const pairedPatterns = [
     /^(?:请)?(?:连接|连结|关联)[“"']?(.+?)[”"']?(?:和|与|跟)[“"']?(.+?)[”"']?(?:，|,)?(?:(?:关系|标签|连线(?:文字|描述)?)(?:设置|设定|标注|写)?(?:是|为|成|:|：)(.+))?$/,
@@ -863,6 +990,8 @@ function createRelation(sourceTitle, targetTitle, label, description, defaultArr
     || !target
     || (!compactLabel && !allowEmptyLabel)
     || /(添加|新增|创建|加入|生成)/.test(`${source} ${target}`)
+    || /^(?:他|她|它|其|该节点|这个节点)$/.test(source)
+    || /^(?:他|她|它|其|该节点|这个节点)$/.test(target)
   ) {
     return null;
   }

@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  augmentOperationPlanWithExplicitRelations,
   buildMindMapOperationMessages,
   createLocalOperationPlan,
   normalizeDiagramSnapshot,
@@ -115,7 +116,8 @@ export async function generateMindMapOperations(body = {}, options = {}) {
     const messages = buildMindMapOperationMessages(currentDiagram, description);
     const requestModel = options.callChatCompletions || callChatCompletions;
     const content = await requestModel(settings, messages, { maxTokens: 2400 });
-    const plan = normalizeOperationPlan(parseJsonFromModel(content), currentDiagram);
+    const modelPlan = normalizeOperationPlan(parseJsonFromModel(content), currentDiagram);
+    const plan = augmentOperationPlanWithExplicitRelations(modelPlan, currentDiagram, description);
 
     if (!plan.operations.length) {
       return {

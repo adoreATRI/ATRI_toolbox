@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
 import {
+  augmentOperationPlanWithExplicitRelations,
   buildMindMapOperationMessages,
   createLocalOperationPlan,
   normalizeGeneratedNodeContent,
@@ -361,11 +362,74 @@ test("creates both missing endpoints before connecting them", () => {
   assert.equal(connection.arrow, "none");
 });
 
-test("defers mixed intents instead of turning action text into a node name", () => {
-  assert.equal(
-    createLocalOperationPlan(diagram({ nodes: [node("node-lance", "兰斯")] }), "创建菲利斯并连接到兰斯"),
-    null,
+test("creates and connects a node from an inline mixed intent", () => {
+  const plan = createLocalOperationPlan(
+    diagram({ nodes: [node("node-lance", "兰斯")] }),
+    "创建菲利斯并连接到兰斯",
   );
+
+  assert.deepEqual(plan.operations.map((operation) => operation.type), ["add_node", "connect"]);
+  assert.equal(plan.operations[0].title, "菲利斯");
+  assert.equal(plan.operations[1].sourceId, plan.operations[0].nodeId);
+  assert.equal(plan.operations[1].targetId, "node-lance");
+});
+
+test("keeps relationship clauses out of generated node names", () => {
+  const plan = createLocalOperationPlan(diagram(), "新增莉亚和加奈多，加奈多服侍莉亚");
+
+  assert.deepEqual(
+    plan.operations.filter((operation) => operation.type === "add_node").map((operation) => operation.title),
+    ["莉亚", "加奈多"],
+  );
+  assert.deepEqual(plan.operations.find((operation) => operation.type === "connect"), {
+    type: "connect",
+    edgeId: "ai-edge",
+    sourceId: plan.operations[1].nodeId,
+    targetId: plan.operations[0].nodeId,
+    label: "服侍",
+    arrow: "forward",
+    line: "solid",
+  });
+});
+
+test("adds explicit relationships omitted by a model plan", () => {
+  const currentDiagram = diagram();
+  const modelPlan = normalizeOperationPlan({
+    summary: "已生成节点。",
+    operations: [
+      { type: "add_node", clientId: "lance", title: "兰斯" },
+      { type: "add_node", clientId: "shilou", title: "希露" },
+    ],
+  }, currentDiagram);
+  const plan = augmentOperationPlanWithExplicitRelations(
+    modelPlan,
+    currentDiagram,
+    "生成兰斯和希露，兰斯与希露是同伴关系",
+  );
+
+  assert.deepEqual(plan.operations.map((operation) => operation.type), ["add_node", "add_node", "connect"]);
+  assert.equal(plan.operations[2].sourceId, plan.operations[0].nodeId);
+  assert.equal(plan.operations[2].targetId, plan.operations[1].nodeId);
+  assert.equal(plan.operations[2].label, "同伴");
+});
+
+test("does not manufacture nodes from ambiguous relationship pronouns", () => {
+  const currentDiagram = diagram();
+  const modelPlan = normalizeOperationPlan({
+    operations: [
+      { type: "add_node", clientId: "lance", title: "兰斯" },
+      { type: "add_node", clientId: "shilou", title: "希露" },
+      { type: "connect", sourceId: "lance", targetId: "shilou", label: "朋友", arrow: "none" },
+    ],
+  }, currentDiagram);
+  const plan = augmentOperationPlanWithExplicitRelations(
+    modelPlan,
+    currentDiagram,
+    "创建兰斯，他与希露是朋友",
+  );
+
+  assert.deepEqual(plan.operations, modelPlan.operations);
+  assert.equal(plan.operations.some((operation) => operation.title === "他"), false);
 });
 
 test("updates an existing edge instead of creating a duplicate", () => {
