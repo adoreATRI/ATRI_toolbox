@@ -1258,11 +1258,24 @@ function applyMindMapOperationsToDrawioXml(xml, operations, diagramTitle = DEFAU
 
     if (operation.type === "update_node") {
       const cell = requireCell(verticesById, operation.nodeId, "节点");
+      const previousGeometry = getCellGeometry(cell);
       const node = {
         title: Object.hasOwn(operation, "title") ? operation.title : extractCellTitle(cell),
         note: Object.hasOwn(operation, "note") ? operation.note : cell.getAttribute("atriNote") || "",
       };
       updateVertexCell(cell, node);
+
+      const nextGeometry = getCellGeometry(cell);
+
+      if (
+        previousGeometry
+        && nextGeometry
+        && (previousGeometry.width !== nextGeometry.width || previousGeometry.height !== nextGeometry.height)
+        && (layoutState.initialConnectionCounts.get(operation.nodeId) || 0) > 0
+      ) {
+        layoutState.movableNodeIds.add(operation.nodeId);
+      }
+
       appliedCount += 1;
       continue;
     }
@@ -1634,7 +1647,8 @@ function applyManagedEdgePresentation(graphRoot, edgeIds) {
     return id && geometry ? [{ id, ...geometry, obstacleOnly: id === "atri-root" }] : [];
   });
   const edgesById = collectEdgeCellsById(graphRoot);
-  const edges = Array.from(edgeIds).flatMap((id) => {
+  const connectedEdgeIds = expandConnectedEdgeIds(edgesById, edgeIds);
+  const edges = Array.from(connectedEdgeIds).flatMap((id) => {
     const edge = edgesById.get(id);
 
     if (!edge) {
@@ -1661,6 +1675,44 @@ function applyManagedEdgePresentation(graphRoot, edgeIds) {
     edge.setAttribute("style", formatEdgeStyle(relation.arrow, relation.line, presentation));
     updateEdgeLabelGeometry(edge, presentation);
   }
+}
+
+function expandConnectedEdgeIds(edgesById, seedIds) {
+  const edgesByNodeId = new Map();
+
+  for (const edge of edgesById.values()) {
+    for (const nodeId of [edge.getAttribute("source"), edge.getAttribute("target")]) {
+      if (!nodeId) {
+        continue;
+      }
+
+      if (!edgesByNodeId.has(nodeId)) {
+        edgesByNodeId.set(nodeId, []);
+      }
+
+      edgesByNodeId.get(nodeId).push(edge);
+    }
+  }
+
+  const connected = new Set(Array.from(seedIds).filter((id) => edgesById.has(id)));
+  const pending = Array.from(connected);
+
+  while (pending.length) {
+    const edge = edgesById.get(pending.pop());
+
+    for (const nodeId of [edge.getAttribute("source"), edge.getAttribute("target")]) {
+      for (const neighbor of edgesByNodeId.get(nodeId) || []) {
+        const id = neighbor.getAttribute("id");
+
+        if (id && !connected.has(id)) {
+          connected.add(id);
+          pending.push(id);
+        }
+      }
+    }
+  }
+
+  return connected;
 }
 
 function getCellGeometry(cell) {
@@ -1959,6 +2011,7 @@ function formatEdgeStyle(relationArrow = "forward", relationLine = "solid", pres
     "strokeColor=#2f6f6d",
     "fontColor=#235453",
     "fontSize=12",
+    "fontFamily=Helvetica",
     "fontStyle=0",
     "align=center",
     "verticalAlign=middle",

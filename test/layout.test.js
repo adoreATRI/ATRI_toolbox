@@ -97,6 +97,82 @@ test("keeps generated siblings aligned without overlap", () => {
   assert.ok(Math.abs(first.y - second.y) >= 100);
 });
 
+test("left-aligns differently sized sibling nodes when relations enter from the left", () => {
+  const nodes = [
+    node("parent", 200, 240),
+    node("short", 40, 700),
+    node("wide", 40, 820, { width: 300 }),
+  ];
+  const result = planIncrementalNodeLayout({
+    nodes,
+    edges: [
+      edge("short-edge", "parent", "short"),
+      edge("wide-edge", "parent", "wide"),
+    ],
+    movableNodeIds: ["short", "wide"],
+    originNodeIds: ["parent"],
+    reflowConnectedComponents: true,
+  });
+  const positions = new Map(result.positions.map((position) => [position.id, position]));
+
+  assert.equal(positions.get("short").x, positions.get("wide").x);
+  assert.notEqual(
+    positions.get("short").x + (nodes[1].width / 2),
+    positions.get("wide").x + (nodes[2].width / 2),
+  );
+});
+
+test("right-aligns differently sized source nodes when relations leave to the right", () => {
+  const nodes = [
+    node("target", 720, 240),
+    node("short", 40, 700),
+    node("wide", 40, 820, { width: 300 }),
+  ];
+  const result = planIncrementalNodeLayout({
+    nodes,
+    edges: [
+      edge("short-edge", "short", "target"),
+      edge("wide-edge", "wide", "target"),
+    ],
+    movableNodeIds: ["short", "wide"],
+    originNodeIds: ["target"],
+    reflowConnectedComponents: true,
+  });
+  const positions = new Map(result.positions.map((position) => [position.id, position]));
+
+  assert.equal(
+    positions.get("short").x + nodes[1].width,
+    positions.get("wide").x + nodes[2].width,
+  );
+});
+
+test("keeps center alignment when a rank has balanced relations on both sides", () => {
+  const nodes = [
+    node("source", 80, 240),
+    node("short", 360, 160),
+    node("wide", 360, 340, { width: 300 }),
+    node("target", 840, 240),
+  ];
+  const result = planIncrementalNodeLayout({
+    nodes,
+    edges: [
+      edge("source-short", "source", "short"),
+      edge("source-wide", "source", "wide"),
+      edge("short-target", "short", "target"),
+      edge("wide-target", "wide", "target"),
+    ],
+    movableNodeIds: ["short", "wide"],
+    originNodeIds: ["source", "target"],
+    reflowConnectedComponents: true,
+  });
+  const positions = new Map(result.positions.map((position) => [position.id, position]));
+  const shortCenter = positions.get("short").x + (nodes[1].width / 2);
+  const wideCenter = positions.get("wide").x + (nodes[2].width / 2);
+
+  assert.equal(shortCenter, wideCenter);
+  assert.notEqual(positions.get("short").x, positions.get("wide").x);
+});
+
 test("learns vertical canvases and aligns on the node center", () => {
   const nodes = [
     node("top", 160, 80),
@@ -270,8 +346,9 @@ test("moves a relation label away from a node occupying the edge midpoint", () =
     edges: [edge("relation", "left", "right", { label: "长期契约关系" })],
   });
 
-  assert.equal(result[0].labelX, 0);
-  assert.ok(result[0].labelY > 0);
+  assert.equal(result[0].labelSide, "above");
+  assert.ok(result[0].labelY < 0);
+  assert.ok(result[0].labelBounds.y + result[0].labelBounds.height < 228);
   assert.ok(
     result[0].labelBounds.x + result[0].labelBounds.width <= 430
       || result[0].labelBounds.x >= 610
@@ -293,4 +370,19 @@ test("separates labels for parallel relationships", () => {
     [result[0].labelX, result[0].labelY],
     [result[1].labelX, result[1].labelY],
   );
+  assert.equal(result[0].labelSide, "above");
+  assert.equal(result[1].labelSide, "above");
+  assert.equal(result[0].labelY, result[1].labelY);
+  assert.equal(result[0].labelBounds.y, result[1].labelBounds.y);
+});
+
+test("keeps reverse horizontal relationship labels visually above the line", () => {
+  const result = planEdgePresentation({
+    nodes: [node("right", 700, 200), node("left", 80, 200)],
+    edges: [edge("reverse", "right", "left", { label: "返回关系" })],
+  });
+
+  assert.equal(result[0].labelSide, "above");
+  assert.ok(result[0].labelY > 0);
+  assert.ok(result[0].labelBounds.y + result[0].labelBounds.height < 228);
 });

@@ -157,14 +157,22 @@ export function planEdgePresentation(input = {}, optionOverrides = {}) {
     for (let index = 0; index < candidates.length; index += 1) {
       const candidate = candidates[index];
       const anchor = pointAlongSegments(segments, (candidate.x + 1) / 2);
+      const placement = preferredEdgeLabelPlacement(anchor, candidate.distance);
       const rect = {
         id: `label-${edge.id}`,
-        x: anchor.point.x + (anchor.normal.x * candidate.y) - (size.width / 2),
-        y: anchor.point.y + (anchor.normal.y * candidate.y) - (size.height / 2),
+        x: anchor.point.x + (anchor.normal.x * placement.y) - (size.width / 2),
+        y: anchor.point.y + (anchor.normal.y * placement.y) - (size.height / 2),
         width: size.width,
         height: size.height,
       };
+      const segmentAxis = Math.abs(anchor.direction.x) >= Math.abs(anchor.direction.y)
+        ? "horizontal"
+        : "vertical";
       let score = index * 0.05;
+
+      if (segmentAxis !== ports.axis) {
+        score += 6;
+      }
 
       if (rect.x < options.canvasPadding || rect.y < options.canvasPadding) {
         score += 8;
@@ -183,7 +191,7 @@ export function planEdgePresentation(input = {}, optionOverrides = {}) {
       }
 
       if (!best || score < best.score) {
-        best = { ...candidate, rect, score };
+        best = { ...candidate, ...placement, rect, score };
       }
     }
 
@@ -193,6 +201,7 @@ export function planEdgePresentation(input = {}, optionOverrides = {}) {
       ...ports,
       labelX: best.x,
       labelY: best.y,
+      labelSide: best.side,
       labelBounds: best.rect,
     };
   });
@@ -229,16 +238,29 @@ function edgeLabelCandidates(offset) {
   const distance = Math.max(18, finiteNumber(offset, 24));
   const result = [];
 
-  for (const x of [0, -0.25, 0.25, -0.5, 0.5]) {
-    result.push(
-      { x, y: -distance },
-      { x, y: distance },
-      { x, y: -Math.round(distance * 1.5) },
-      { x, y: Math.round(distance * 1.5) },
-    );
+  for (const laneDistance of [distance, distance + 28, distance + 56]) {
+    for (const x of [0, -0.25, 0.25, -0.5, 0.5, -0.75, 0.75]) {
+      result.push({ x, distance: laneDistance });
+    }
   }
 
   return result;
+}
+
+function preferredEdgeLabelPlacement(anchor, distance) {
+  const horizontal = Math.abs(anchor.direction.x) >= Math.abs(anchor.direction.y);
+
+  if (horizontal) {
+    return {
+      y: -distance * (Math.sign(anchor.normal.y) || 1),
+      side: "above",
+    };
+  }
+
+  return {
+    y: distance * (Math.sign(anchor.normal.x) || 1),
+    side: "right",
+  };
 }
 
 function pointAlongSegments(segments, fraction) {
@@ -260,6 +282,7 @@ function pointAlongSegments(segments, fraction) {
           x: start.x + (dx * ratio),
           y: start.y + (dy * ratio),
         },
+        direction: length ? { x: dx / length, y: dy / length } : { x: 1, y: 0 },
         normal: length ? { x: -dy / length, y: dx / length } : { x: 0, y: 1 },
       };
     }
@@ -269,6 +292,7 @@ function pointAlongSegments(segments, fraction) {
 
   return {
     point: { ...fallback[0] },
+    direction: { x: 1, y: 0 },
     normal: { x: 0, y: 1 },
   };
 }
@@ -365,13 +389,19 @@ function layoutComponent(context) {
       height: node.height,
     };
   });
+  const alignedRects = alignConnectedRankBoundaries({
+    rects: rawRects,
+    graph,
+    edges: componentEdges,
+    rankdir,
+  });
   const baseOffset = anchorIds.length
     ? getAnchorOffset(anchorIds, graph, nodesById, edges)
     : componentIds.some((id) => originIds.has(id))
       ? getOriginOffset(componentIds.filter((id) => originIds.has(id)), graph, nodesById)
-      : getIndependentOffset(rawRects, occupied, options);
+      : getIndependentOffset(alignedRects, occupied, options);
   const offset = findCollisionFreeOffset({
-    rawRects,
+    rawRects: alignedRects,
     baseOffset,
     occupied,
     nodesById,
@@ -380,11 +410,98 @@ function layoutComponent(context) {
     options,
   });
 
-  return rawRects.map((rect) => ({
+  return alignedRects.map((rect) => ({
     id: rect.id,
     x: Math.max(options.canvasPadding, snapToGrid(rect.x + offset.x, options.gridSize)),
     y: Math.max(options.canvasPadding, snapToGrid(rect.y + offset.y, options.gridSize)),
   }));
+}
+
+function alignConnectedRankBoundaries({ rects, graph, edges, rankdir }) {
+  const horizontal = rankdir === "LR" || rankdir === "RL";
+  const groups = [];
+
+  for (const rect of rects) {
+    const layoutNode = graph.node(rect.id);
+    const coordinate = horizontal ? layoutNode.x : layoutNode.y;
+    let group = groups.find((item) => Math.abs(item.coordinate - coordinate) < 1);
+
+    if (!group) {
+      group = { coordinate, rects: [] };
+      groups.push(group);
+    }
+
+    group.rects.push(rect);
+  }
+
+  const alignedById = new Map(rects.map((rect) => [rect.id, { ...rect }]));
+
+  for (const group of groups) {
+    if (group.rects.length < 2) {
+      continue;
+    }
+
+    const groupIds = new Set(group.rects.map((rect) => rect.id));
+    let before = 0;
+    let after = 0;
+
+    for (const edge of edges) {
+      const memberId = groupIds.has(edge.sourceId)
+        ? edge.sourceId
+        : groupIds.has(edge.targetId) ? edge.targetId : "";
+      const neighborId = memberId === edge.sourceId ? edge.targetId : edge.sourceId;
+
+      if (!memberId || groupIds.has(neighborId)) {
+        continue;
+      }
+
+      const neighbor = graph.node(neighborId);
+
+      if (!neighbor) {
+        continue;
+      }
+
+      const neighborCoordinate = horizontal ? neighbor.x : neighbor.y;
+
+      if (neighborCoordinate < group.coordinate - 1) {
+        before += 1;
+      } else if (neighborCoordinate > group.coordinate + 1) {
+        after += 1;
+      }
+    }
+
+    if (before === after) {
+      continue;
+    }
+
+    if (horizontal && before > after) {
+      const left = Math.min(...group.rects.map((rect) => rect.x));
+
+      for (const rect of group.rects) {
+        alignedById.get(rect.id).x = left;
+      }
+    } else if (horizontal) {
+      const right = Math.max(...group.rects.map((rect) => rect.x + rect.width));
+
+      for (const rect of group.rects) {
+        alignedById.get(rect.id).x = right - rect.width;
+      }
+    } else if (before > after) {
+      const top = Math.min(...group.rects.map((rect) => rect.y));
+
+      for (const rect of group.rects) {
+        alignedById.get(rect.id).y = top;
+      }
+    } else {
+      const bottom = Math.max(...group.rects.map((rect) => rect.y + rect.height));
+
+      for (const rect of group.rects) {
+        alignedById.get(rect.id).y = bottom - rect.height;
+      }
+    }
+  }
+
+  return rects.map((rect) => alignedById.get(rect.id));
 }
 
 function normalizeNodes(input) {
@@ -1042,13 +1159,14 @@ function measureEdgeLabel(label) {
 }
 
 function edgeLabelRect(source, target, label, id) {
-  const sourceCenter = centerOf(source);
-  const targetCenter = centerOf(target);
+  const segments = orthogonalEdgeSegments(source, target);
+  const anchor = pointAlongSegments(segments, 0.5);
+  const placement = preferredEdgeLabelPlacement(anchor, 24);
   const size = measureEdgeLabel(label);
   return {
     id: `label-${id}`,
-    x: ((sourceCenter.x + targetCenter.x) / 2) - (size.width / 2),
-    y: ((sourceCenter.y + targetCenter.y) / 2) - (size.height / 2),
+    x: anchor.point.x + (anchor.normal.x * placement.y) - (size.width / 2),
+    y: anchor.point.y + (anchor.normal.y * placement.y) - (size.height / 2),
     width: size.width,
     height: size.height,
   };
